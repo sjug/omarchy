@@ -116,7 +116,8 @@ omarchy-update
   ├─ omarchy-update-lock
   │    └─ acquire the update lock and run omarchy-update inside it
   ├─ omarchy-update-requires-free-space
-  │    └─ abort below the configured free-space threshold on /
+  │    ├─ abort below the configured free-space threshold on /
+  │    └─ on LVM/XFS, fail closed at 80% thin-pool data or 70% metadata usage
   ├─ confirm unless -y
   ├─ omarchy-update-pkg-prune
   │    └─ trim the pacman cache to two versions per package, deliberately
@@ -137,12 +138,11 @@ Important behavior:
 
 - In dev-link mode, `omarchy update` fast-forwards the active checkout from its
   configured upstream before changing system packages or running migrations.
-- `-y` exports `OMARCHY_UPDATE_UNATTENDED=1` — a promise not to ask anything.
-  Steps that would prompt (orphan removal, conflict handoff) report and skip
-  instead of blocking.
-- The free-space requirement uses a 10 GiB threshold and stops the update before
-  confirmation when it is not met. If free space cannot be determined, the
-  check is silently skipped. Set `OMARCHY_UPDATE_FORCE=1` to bypass the check.
+- `-y` exports `OMARCHY_UPDATE_UNATTENDED=1` — a promise not to ask anything. Steps that would prompt (orphan removal, conflict handoff) report and skip instead of blocking.
+- The storage preflight runs before confirmation, package-cache pruning, and snapshot creation. Btrfs systems use only the 10 GiB filesystem free-space check. An LVM/XFS system also queries its configured root thin pool through `sudo lvs` under the C locale and fails closed if the pool cannot be queried or parsed. `OMARCHY_UPDATE_FORCE=1` remains the explicit emergency bypass for both checks.
+- The LVM/XFS data gate blocks at 80% because the installed `omarchy-thin` profile asks dmeventd to autoextend at that point. Healthy monitored pools should grow first and fall to roughly 67%; seeing 80% during update preflight means the VG reserve is exhausted, autoextension failed, or monitoring is not working. A benign race while dmeventd extends can block once, so the command asks the user to retry in a minute. At the spike's approximately 50 GiB pool size, a 20% extension is approximately 10 GiB, intentionally matching the filesystem free-space margin.
+- The metadata gate blocks earlier at 70% because thin metadata exhaustion has a more difficult and potentially unrepairable recovery path, while metadata consumption follows mappings and fragmentation rather than filesystem bytes and is therefore harder to forecast.
+- The free-space requirement uses a 10 GiB threshold and stops the update before confirmation when it is not met. If free space cannot be determined, the check is silently skipped. Set `OMARCHY_UPDATE_FORCE=1` to bypass the check.
 - `omarchy update` checks/runs migrations in the same visible terminal via
   `omarchy-migrate` after pacman finishes.
 - A failure should leave enough output in `/tmp/omarchy-update.log` and the
@@ -275,7 +275,7 @@ scripts.
 | `omarchy-update-system-pkgs` | Runs `sudo env OMARCHY_UPDATE_PACMAN=1 pacman -Syu --noconfirm` with `--overwrite '/usr/share/omarchy/*'`, capturing stderr to a report file; on failure it execs `omarchy-update-system-pkgs-when-conflicted`. | **Keep for now.** Small leaf command, clear/testable. |
 | `omarchy-update-system-pkgs-when-conflicted` | Hidden conflict handler: quarantines unowned conflicting files under `/var/lib/omarchy/replaced`, retries the upgrade once, restores files the upgrade didn't claim, and hands package-vs-package conflicts to an interactive pacman run (never under `-y`). | **Keep internal/hidden.** Keeps conflict recovery out of the happy path. |
 | `omarchy-update-pkg-prune` | Trims the pacman cache to two versions per package (`paccache -rk2`) before the snapshot, keeping the offline downgrade path while capping snapshot growth. | **Keep internal/hidden.** |
-| `omarchy-update-requires-free-space` | Aborts the update below a 10 GiB free-space threshold on `/`; silently skipped when free space cannot be determined; `OMARCHY_UPDATE_FORCE=1` bypasses. | **Keep internal/hidden.** |
+| `omarchy-update-requires-free-space` | Aborts below 10 GiB free on `/`; on LVM/XFS, also blocks at 80% root thin-pool data or 70% metadata usage and fails closed when pool health is unavailable; `OMARCHY_UPDATE_FORCE=1` bypasses. | **Keep internal/hidden.** |
 | `omarchy-migrate` | Public migration command. Waits for pacman, then runs all pending migrations for the current user. Supports `--pending`. | **Keep.** This replaces the discarded `omarchy-update-user-finalize` name and no longer needs `--force`. |
 | `omarchy-update-pacman-guard` | ALPM pre-transaction guard that aborts direct `pacman -Syu` style upgrades unless Omarchy set `OMARCHY_UPDATE_PACMAN=1` or the user explicitly set `OMARCHY_ALLOW_DIRECT_PACMAN=1`. | **Keep internal/hidden.** This is what nudges users back to `omarchy update`. |
 | `omarchy-migrate-notify` | Internal login-time notification helper. Uses `omarchy-migrate --pending` and shows a notification only when this user has pending migrations. | **Keep internal/hidden.** Clear name now that the public command is `omarchy-migrate`. |

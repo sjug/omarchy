@@ -2,16 +2,90 @@
 
 # omarchy:summary=Check free disk space required for an update
 # omarchy:hidden=true
+# omarchy:requires-sudo=true
 
 set -e
 
+STORAGE_CONF_PATH="${OMARCHY_STORAGE_CONF_PATH:-/etc/omarchy/storage.conf}"
+# Data should autoextend at 80%, so observing it there means that safety net is unavailable.
+# Metadata gets more headroom because exhaustion is harder to predict and recover from.
+THIN_POOL_DATA_LIMIT=80
+THIN_POOL_METADATA_LIMIT=70
+
+storage_value() {
+  local key="$1"
+
+  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$STORAGE_CONF_PATH"
+}
+
+percentage_at_least() {
+  local actual="$1"
+  local limit="$2"
+
+  LC_ALL=C awk -v actual="$actual" -v limit="$limit" 'BEGIN { exit !(actual >= limit) }'
+}
+
+fail_pool_query() {
+  echo "Omarchy cannot verify the LVM root thin-pool health required for a safe update."
+  echo "Check the pool with sudo lvs, then retry. Set OMARCHY_UPDATE_FORCE=1 to bypass this check."
+  exit 1
+}
+
+check_lvm_xfs_pool_health() {
+  local storage_backend storage_vg storage_pool pool_usage
+  local data_percent metadata_percent extra_field
+  local pool_unsafe=false
+
+  [[ -f $STORAGE_CONF_PATH ]] || return 0
+
+  storage_backend=$(storage_value OMARCHY_STORAGE_BACKEND) || fail_pool_query
+  [[ $storage_backend == "lvm_xfs" ]] || return 0
+
+  storage_vg=$(storage_value OMARCHY_STORAGE_VG) || fail_pool_query
+  storage_pool=$(storage_value OMARCHY_STORAGE_ROOT_POOL) || fail_pool_query
+  if [[ ! $storage_vg =~ ^[a-zA-Z0-9+_.-]+$ || ! $storage_pool =~ ^[a-zA-Z0-9+_.-]+$ ]]; then
+    fail_pool_query
+  fi
+
+  if ! pool_usage=$(sudo env LC_ALL=C lvs --noheadings -o data_percent,metadata_percent "$storage_vg/$storage_pool" 2>/dev/null); then
+    fail_pool_query
+  fi
+  if [[ $pool_usage == *$'\n'* ]]; then
+    fail_pool_query
+  fi
+
+  read -r data_percent metadata_percent extra_field <<<"$pool_usage"
+  if [[ ! $data_percent =~ ^[0-9]+([.][0-9]+)?$ || ! $metadata_percent =~ ^[0-9]+([.][0-9]+)?$ || -n $extra_field ]]; then
+    fail_pool_query
+  fi
+
+  if percentage_at_least "$data_percent" "$THIN_POOL_DATA_LIMIT"; then
+    echo "The Omarchy root thin pool is at ${data_percent}% data usage (safety limit: ${THIN_POOL_DATA_LIMIT}%)."
+    echo "Retry in a minute; if this persists, the pool can no longer grow."
+    pool_unsafe=true
+  fi
+
+  if percentage_at_least "$metadata_percent" "$THIN_POOL_METADATA_LIMIT"; then
+    echo "The Omarchy root thin pool is at ${metadata_percent}% metadata usage (safety limit: ${THIN_POOL_METADATA_LIMIT}%)."
+    echo "Thin-pool metadata must be extended or repaired before updating."
+    pool_unsafe=true
+  fi
+
+  if [[ $pool_unsafe == "true" ]]; then
+    echo "Set OMARCHY_UPDATE_FORCE=1 only after verifying the pool can absorb the update."
+    exit 1
+  fi
+}
+
 if [[ ${OMARCHY_UPDATE_FORCE:-0} == "1" ]]; then
   exit 0
-elif read -r available_bytes < <(df --output=avail --block-size=1 / 2>/dev/null | tail -n 1) &&
+fi
+
+if read -r available_bytes < <(df --output=avail --block-size=1 / 2>/dev/null | tail -n 1) &&
   [[ $available_bytes =~ ^[0-9]+$ ]] &&
   (( available_bytes < 10 * 1024 * 1024 * 1024 )); then
   echo "You need at least 10 GiB free to safely update Omarchy."
   exit 1
-else
-  exit 0
 fi
+
+check_lvm_xfs_pool_health
