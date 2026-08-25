@@ -5,6 +5,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
 template="$ROOT/default/snapper/root"
+lvm_xfs_template="$ROOT/default/snapper/root-lvm-xfs"
 limine_defaults="$ROOT/etc/limine-entry-tool.d/omarchy-defaults.conf"
 limine_notify_autostart="$ROOT/config/autostart/limine-snapper-notify.desktop"
 
@@ -71,6 +72,76 @@ grep -Fx 'systemctl disable --now snapper-timeline.timer' "$test_tmp/calls.log" 
 grep -Fx 'systemctl enable --now snapper-cleanup.timer limine-snapper-sync.service' "$test_tmp/calls.log" >/dev/null || fail "snapshot configure enables cleanup and Limine snapshot sync"
 pass "snapshot configure normalizes Snapper policy and services"
 
+: >"$test_tmp/calls.log"
+
+TEST_LOG="$test_tmp/calls.log" \
+PATH="$fake_bin:$PATH" \
+OMARCHY_PATH="$ROOT" \
+OMARCHY_SNAPPER_BACKEND=lvm_xfs \
+OMARCHY_SNAPPER_CONFIG_PATH="$test_tmp/etc/snapper/configs/root-lvm-xfs" \
+OMARCHY_SNAPPER_CONF_PATH="$test_tmp/etc/conf.d/snapper-lvm-xfs" \
+  bash -euo pipefail "$ROOT/install/config/snapper.sh" >/dev/null
+
+cmp -s "$lvm_xfs_template" "$test_tmp/etc/snapper/configs/root-lvm-xfs" || fail "LVM/XFS snapshot configure installs the LVM/XFS template"
+grep -Fx 'snapper --no-dbus -c root create-config --fstype=lvm(xfs) /' "$test_tmp/calls.log" >/dev/null || fail "LVM/XFS snapshot configure selects Snapper's thin-LVM XFS backend"
+grep -Fx 'systemctl disable --now limine-snapper-sync.service limine-snapper-sync.path' "$test_tmp/calls.log" >/dev/null || fail "LVM/XFS snapshot configure disables the Btrfs Limine sync"
+grep -Fx 'systemctl enable --now snapper-cleanup.timer' "$test_tmp/calls.log" >/dev/null || fail "LVM/XFS snapshot configure enables cleanup"
+pass "snapshot configure uses Snapper's LVM/XFS backend without Btrfs boot sync"
+
+snapshot_command="$ROOT/bin/omarchy-snapshot"
+grep -F 'OMARCHY_STORAGE_BACKEND' "$snapshot_command" >/dev/null || fail "snapshot command detects the installed storage backend"
+grep -F 'LVM/XFS restore is not available as a supported Omarchy command yet.' "$snapshot_command" >/dev/null || fail "snapshot command does not invoke the Btrfs restore tool on LVM/XFS"
+! grep -F 'FSTYPE="lvm(xfs)"' "$snapshot_command" >/dev/null || fail "snapshot command does not rely on an unreadable Snapper config fallback"
+pass "snapshot command guards the experimental LVM/XFS restore boundary"
+
+storage_conf="$test_tmp/storage.conf"
+printf 'OMARCHY_STORAGE_BACKEND=lvm_xfs\n' >"$storage_conf"
+
+if snapshot_output=$(
+  PATH="$fake_bin:$ROOT/bin:$PATH" \
+  OMARCHY_STORAGE_CONF_PATH="$storage_conf" \
+    "$snapshot_command" restore 2>&1
+); then
+  fail "LVM/XFS snapshot restore guard returns success"
+else
+  snapshot_status=$?
+fi
+((snapshot_status == 2)) || fail "LVM/XFS snapshot restore guard returns status 2"
+[[ $snapshot_output == *"LVM/XFS restore is not available"* ]] || fail "LVM/XFS snapshot restore guard explains the boundary"
+pass "snapshot restore stops before the Btrfs restore command on LVM/XFS"
+
+hibernation_command="$ROOT/bin/omarchy-hibernation-setup"
+if hibernation_output=$(
+  OMARCHY_STORAGE_CONF_PATH="$storage_conf" \
+    "$hibernation_command" --force --no-rebuild 2>&1
+); then
+  fail "LVM/XFS hibernation guard returns success"
+else
+  hibernation_status=$?
+fi
+((hibernation_status == 2)) || fail "LVM/XFS hibernation guard returns status 2"
+[[ $hibernation_output == *"zram without disk-backed swap"* ]] || fail "LVM/XFS hibernation guard explains the zram-only policy"
+pass "hibernation setup stops before Btrfs operations on LVM/XFS"
+
+cat >"$fake_bin/sudo" <<'STUB'
+#!/bin/bash
+printf 'sudo %s\n' "$*" >>"$TEST_LOG"
+STUB
+chmod +x "$fake_bin/sudo"
+
+: >"$test_tmp/calls.log"
+refresh_output=$(
+  TEST_LOG="$test_tmp/calls.log" \
+  PATH="$fake_bin:$PATH" \
+  OMARCHY_PATH="$ROOT" \
+  OMARCHY_STORAGE_CONF_PATH="$storage_conf" \
+    "$ROOT/bin/omarchy-refresh-limine"
+)
+grep -Fx 'sudo limine-update' "$test_tmp/calls.log" >/dev/null || fail "Limine refresh still updates the bootloader on LVM/XFS"
+! grep -F 'limine-snapper-sync' "$test_tmp/calls.log" >/dev/null || fail "Limine refresh invokes Btrfs snapshot sync on LVM/XFS"
+[[ $refresh_output == *"Skipping Btrfs snapshot-menu sync"* ]] || fail "Limine refresh reports the skipped Btrfs snapshot sync"
+pass "Limine refresh skips only the Btrfs snapshot-menu sync on LVM/XFS"
+
 setup_system="$ROOT/bin/omarchy-apply-system"
 grep -F 'config/all.sh' "$setup_system" >/dev/null ||
   fail "system setup runs the config phase"
@@ -82,6 +153,8 @@ migration=$(grep -rl 'Normalize Snapper snapshot services' "$ROOT/migrations" | 
 [[ -n $migration ]] || fail "Snapper service migration exists"
 grep -F 'unit_active snapper-cleanup.timer' "$migration" >/dev/null
 grep -F 'unit_active limine-snapper-sync.service' "$migration" >/dev/null
+grep -F 'OMARCHY_STORAGE_BACKEND' "$migration" >/dev/null
+grep -F 'storage_backend == "lvm_xfs"' "$migration" >/dev/null
 grep -F 'sudo "$@"' "$migration" >/dev/null
 grep -F 'as_root env OMARCHY_PATH="$OMARCHY_PATH" bash -euo pipefail "$snapper_config_script"' "$migration" >/dev/null
 ! grep -F 'NUMBER_LIMIT="5"' "$migration" >/dev/null || fail "Snapper service migration does not overwrite working custom retention"

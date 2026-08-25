@@ -3,6 +3,12 @@
 # omarchy:summary=Overwrite the user config for the Limine bootloader and rebuild it.
 # omarchy:requires-sudo=true
 
+STORAGE_CONF_PATH="${OMARCHY_STORAGE_CONF_PATH:-/etc/omarchy/storage.conf}"
+STORAGE_BACKEND=""
+if [[ -f $STORAGE_CONF_PATH ]]; then
+  STORAGE_BACKEND=$(awk -F= '$1 == "OMARCHY_STORAGE_BACKEND" { print $2 }' "$STORAGE_CONF_PATH")
+fi
+
 legacy_uki="/boot/EFI/Linux/$(cat /etc/machine-id)_linux.efi"
 
 if sudo test -f /boot/EFI/Linux/omarchy_linux.efi && sudo test -f "$legacy_uki"; then
@@ -16,4 +22,8 @@ sudo mv /boot/limine.conf /boot/limine.conf.bak
 sudo cp "$OMARCHY_PATH/default/limine/limine.conf" /boot/limine.conf
 
 sudo limine-update
-sudo limine-snapper-sync
+if [[ $STORAGE_BACKEND == "lvm_xfs" ]]; then
+  echo "Skipping Btrfs snapshot-menu sync on LVM/XFS storage"
+else
+  sudo limine-snapper-sync
+fi

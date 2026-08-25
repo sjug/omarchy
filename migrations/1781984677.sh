@@ -23,6 +23,14 @@ unit_active() {
 }
 
 needs_repair=0
+storage_backend=""
+
+if [[ -f /etc/omarchy/storage.conf ]]; then
+  storage_backend=$(awk -F= '$1 == "OMARCHY_STORAGE_BACKEND" { print $2 }' /etc/omarchy/storage.conf)
+fi
+if [[ -z $storage_backend ]] && grep -Fqx 'FSTYPE="lvm(xfs)"' /etc/snapper/configs/root 2>/dev/null; then
+  storage_backend="lvm_xfs"
+fi
 
 [[ -f /etc/snapper/configs/root ]] || needs_repair=1
 
@@ -30,8 +38,14 @@ if ! unit_enabled snapper-cleanup.timer || ! unit_active snapper-cleanup.timer; 
   needs_repair=1
 fi
 
-if ! unit_enabled limine-snapper-sync.service || ! unit_active limine-snapper-sync.service; then
-  needs_repair=1
+if [[ $storage_backend == "lvm_xfs" ]]; then
+  if unit_enabled limine-snapper-sync.service || unit_active limine-snapper-sync.service; then
+    needs_repair=1
+  fi
+else
+  if ! unit_enabled limine-snapper-sync.service || ! unit_active limine-snapper-sync.service; then
+    needs_repair=1
+  fi
 fi
 
 (( needs_repair )) || exit 0

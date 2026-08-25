@@ -4,6 +4,13 @@
 # omarchy:requires-sudo=true
 # omarchy:args=[--force] [--no-rebuild]
 
+STORAGE_CONF_PATH="${OMARCHY_STORAGE_CONF_PATH:-/etc/omarchy/storage.conf}"
+if [[ -f $STORAGE_CONF_PATH ]] && grep -Fqx 'OMARCHY_STORAGE_BACKEND=lvm_xfs' "$STORAGE_CONF_PATH"; then
+  echo "Hibernation setup is not available on the experimental LVM/XFS storage backend." >&2
+  echo "This layout intentionally uses zram without disk-backed swap." >&2
+  exit 2
+fi
+
 FORCE=false
 NO_REBUILD=false
 for arg in "$@"; do

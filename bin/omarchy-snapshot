@@ -17,6 +17,12 @@ if omarchy-cmd-missing snapper; then
   exit 127 # omarchy-update can use this to just ignore if snapper is not available
 fi
 
+STORAGE_CONF_PATH="${OMARCHY_STORAGE_CONF_PATH:-/etc/omarchy/storage.conf}"
+SNAPSHOT_BACKEND=""
+if [[ -f $STORAGE_CONF_PATH ]]; then
+  SNAPSHOT_BACKEND=$(awk -F= '$1 == "OMARCHY_STORAGE_BACKEND" { print $2 }' "$STORAGE_CONF_PATH")
+fi
+
 case "$COMMAND" in
 create)
   # The description is just a label, so never let it abort the snapshot.
@@ -41,9 +47,19 @@ create)
     sudo snapper -c "$config" cleanup number
   done
 
-  echo "Snapshots can be selected during boot."
+  if [[ $SNAPSHOT_BACKEND == "lvm_xfs" ]]; then
+    echo "Snapshot created. LVM/XFS boot and restore remain an experimental ISO spike."
+  else
+    echo "Snapshots can be selected during boot."
+  fi
   ;;
 restore)
-  sudo limine-snapper-restore
+  if [[ $SNAPSHOT_BACKEND == "lvm_xfs" ]]; then
+    echo "LVM/XFS restore is not available as a supported Omarchy command yet." >&2
+    echo "Use the ISO QEMU spike to evaluate root-switch and thin-merge restore paths." >&2
+    exit 2
+  else
+    sudo limine-snapper-restore
+  fi
   ;;
 esac
