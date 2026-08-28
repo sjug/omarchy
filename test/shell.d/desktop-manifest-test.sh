@@ -101,6 +101,18 @@ for package in gnome-themes-extra yaru-icon-theme; do
 done
 pass "desktop manifest carries the GTK and icon themes in core"
 
+# The idle service launches omarchy-screensaver from the core session, and
+# that command executes ttfx directly. A checkout-only desktop must not reach
+# its first idle cycle with the animation runtime missing.
+awk '
+  /^# group: / { in_group = ($3 == "core"); next }
+  { sub(/[[:space:]]*#.*$/, "") }
+  in_group && $0 == "ttfx" { found = 1 }
+  END { exit !found }
+' "$ROOT/install/omarchy-desktop.packages" ||
+  fail "desktop manifest carries ttfx in the core group"
+pass "desktop manifest carries ttfx in core for the screensaver"
+
 # The default screenshot action and clipboard image opener both execute
 # tensaku-edit, so capture is incomplete on a checkout-only install without it.
 awk '
