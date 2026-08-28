@@ -10,11 +10,16 @@ Rectangle {
   property string currentUser: userModel.lastUser
   property bool loginFailed: false
   property int sessionIndex: {
+    var uwsmIndex = -1
     for (var i = 0; i < sessionModel.rowCount(); i++) {
       var name = (sessionModel.data(sessionModel.index(i, 0), Qt.DisplayRole) || "").toString()
-      if (name.indexOf("uwsm") !== -1)
+      if (name === "Omarchy (Hyprland uwsm)")
         return i
+      if (uwsmIndex === -1 && name.toLowerCase().indexOf("uwsm") !== -1)
+        uwsmIndex = i
     }
+    if (uwsmIndex !== -1)
+      return uwsmIndex
     return sessionModel.lastIndex
   }
 
@@ -99,7 +104,7 @@ Rectangle {
           cursorDelegate: Item {}
           focus: true
 
-          onTextChanged: root.loginFailed = false
+          onTextChanged: if (text.length > 0) root.loginFailed = false
 
           Keys.onPressed: {
             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
