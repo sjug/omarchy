@@ -46,7 +46,7 @@ incoming="$TMPDIR/incoming"
 write_plugin "$incoming" "acme.same" "Incoming"
 git -C "$incoming" init -q
 git -C "$incoming" add .
-git -C "$incoming" -c user.name=Test -c user.email=test@example.com commit -qm "Initial"
+git -C "$incoming" -c user.name=Test -c user.email=test@example.com -c commit.gpgsign=false commit -qm "Initial"
 
 output=$(HOME="$test_home" OMARCHY_PATH="$ROOT" PATH="$stub_dir:$ROOT/bin:$PATH" \
   omarchy-plugin-add "$incoming" --yes 2>&1) &&
