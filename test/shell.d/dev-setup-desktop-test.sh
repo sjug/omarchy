@@ -60,6 +60,8 @@ echo 'tmux' >"$fake_checkout/config/tmux/tmux.conf"
 : >"$fake_checkout/default/bash/env-bootstrap"
 : >"$fake_checkout/default/uwsm/env.d/10-omarchy"
 printf '[Desktop Entry]\n' >"$fake_checkout/default/wayland-sessions/omarchy.desktop"
+echo 'about branding' >"$fake_checkout/icon.txt"
+echo 'screensaver branding' >"$fake_checkout/logo.txt"
 
 cat >"$stub_bin/sudo" <<'SH'
 #!/bin/bash
@@ -263,6 +265,9 @@ pass "non-core stages require the core package stage"
 reset_run
 printf '[omarchy]\nServer = x\n' >"$pacman_conf"
 printf 'export OMARCHY_PATH=%s\n' "$fake_checkout" >"$omarchy_conf"
+mkdir -p "$test_home/.config/omarchy/branding"
+echo 'custom about branding' >"$test_home/.config/omarchy/branding/about.txt"
+echo 'custom screensaver branding' >"$test_home/.config/omarchy/branding/screensaver.txt"
 OMARCHY_TEST_INSTALLED_PACKAGES="hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring" run_setup config >/dev/null
 [[ ! -s $sudo_log ]] || fail "config alone does not prime sudo" "$(<"$sudo_log")"
 if grep -qx 'sudo-keepalive' "$call_log"; then
@@ -272,9 +277,26 @@ btop_theme_link="$test_home/.config/btop/themes/current.theme"
 [[ -L $btop_theme_link ]] || fail "config creates the btop current-theme symlink"
 [[ $(readlink "$btop_theme_link") == "$test_home/.local/state/omarchy/current/theme/btop.theme" ]] ||
   fail "btop current-theme symlink targets the generated Omarchy theme" "$(readlink "$btop_theme_link")"
-pass "config is user-scoped and links btop to the generated theme"
+grep -qx 'custom about branding' "$test_home/.config/omarchy/branding/about.txt" ||
+  fail "config preserves existing About branding"
+grep -qx 'custom screensaver branding' "$test_home/.config/omarchy/branding/screensaver.txt" ||
+  fail "config preserves existing screensaver branding"
+pass "config is user-scoped, preserves custom branding, and links btop to the generated theme"
 grep -qx 'theme-set-gnome' "$call_log" ||
   fail "config synchronizes the generated theme to GTK applications" "$(<"$call_log")"
+
+# --- Invalid branding targets are refused before config writes begin. A
+# successful config stage must never leave a runtime path it knows is broken.
+reset_run
+printf '[omarchy]\nServer = x\n' >"$pacman_conf"
+printf 'export OMARCHY_PATH=%s\n' "$fake_checkout" >"$omarchy_conf"
+mkdir -p "$test_home/.config/omarchy/branding"
+ln -s "$test_home/missing-branding" "$test_home/.config/omarchy/branding/screensaver.txt"
+if OMARCHY_TEST_INSTALLED_PACKAGES="hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring" run_setup config >/dev/null 2>&1; then
+  fail "config accepts a dangling screensaver-branding symlink"
+fi
+[[ ! -e $test_home/.local/share/fonts/omarchy.ttf ]] || fail "branding validation happens before config writes"
+pass "config refuses broken branding targets before modifying user config"
 
 # --- core alone: repo plus core packages, nothing user-level.
 reset_run
@@ -382,6 +404,10 @@ pass "uwsm environment reproduces the packaged chain without embedding the path"
 [[ -f $test_home/.config/hypr/hyprland.lua ]] || fail "desktop configs are seeded"
 [[ -f $test_home/.config/foot/foot.ini ]] || fail "foot config is seeded"
 [[ -L $test_home/.config/btop/themes/current.theme ]] || fail "btop follows the generated Omarchy theme"
+cmp -s "$fake_checkout/icon.txt" "$test_home/.config/omarchy/branding/about.txt" ||
+  fail "config seeds the default About branding when absent"
+cmp -s "$fake_checkout/logo.txt" "$test_home/.config/omarchy/branding/screensaver.txt" ||
+  fail "config seeds the default screensaver branding when absent"
 if [[ -e $test_home/.config/git || -e $test_home/.config/tmux ]]; then
   fail "non-desktop configs are not seeded by default"
 fi
@@ -429,3 +455,9 @@ grep -q 'link: linked to this checkout' <<<"$status_output" || fail "status veri
 grep -q 'link: uwsm environment present' <<<"$status_output" || fail "status sees the uwsm environment" "$status_output"
 grep -q 'config: seeded' <<<"$status_output" || fail "status sees the seeded config" "$status_output"
 pass "status reflects completed stages"
+
+mv "$test_home/.config/omarchy/branding/screensaver.txt" "$test_home/.config/omarchy/branding/screensaver.txt.missing"
+status_output=$(OMARCHY_TEST_PRODUCT_INSTALLED='' run_setup status)
+grep -q 'config: not seeded' <<<"$status_output" ||
+  fail "status reports config incomplete when required branding is absent" "$status_output"
+pass "status includes required runtime branding in config completeness"

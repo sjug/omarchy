@@ -43,7 +43,8 @@ idempotent and safe to re-run):
                  grant, not a production one. Developers who want
                  "sudo omarchy-*" resolution run omarchy-dev-link directly.
   config         Seed desktop configs into ~/.config (backups kept), install
-                 the icon font, generate the initial theme, and mark
+                 the icon font and default branding (existing branding is
+                 preserved), generate the initial theme, and mark
                  package-dependent first-run provisioning complete.
                  Requires link.
   audio          PipeWire pulse/alsa bridges, WirePlumber, volume controls.
@@ -262,6 +263,8 @@ if stage_selected status; then
     echo "  link: uwsm environment absent"
   fi
   if [[ -f $HOME/.config/hypr/hyprland.lua &&
+    -f $HOME/.config/omarchy/branding/about.txt &&
+    -f $HOME/.config/omarchy/branding/screensaver.txt &&
     -f $HOME/.local/state/omarchy/done/first-run-user &&
     -L $HOME/.config/btop/themes/current.theme ]]; then
     echo "  config: seeded (theme: $(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo none))"
@@ -298,6 +301,21 @@ if stage_selected config; then
     echo "Error: theme '$theme' does not exist under $checkout/themes" >&2
     exit 1
   fi
+  for branding_source in "$checkout/icon.txt" "$checkout/logo.txt"; do
+    if [[ ! -f $branding_source ]]; then
+      echo "Error: required branding source is missing: $branding_source" >&2
+      exit 1
+    fi
+  done
+  for branding_target in "$HOME/.config/omarchy/branding/about.txt" "$HOME/.config/omarchy/branding/screensaver.txt"; do
+    if [[ -L $branding_target && ! -e $branding_target ]]; then
+      echo "Error: refusing to replace dangling branding symlink: $branding_target" >&2
+      exit 1
+    elif [[ -e $branding_target && ! -f $branding_target ]]; then
+      echo "Error: refusing to replace non-file branding path: $branding_target" >&2
+      exit 1
+    fi
+  done
 fi
 
 # This bootstrap is for systems the Omarchy product did not install. On a
@@ -428,10 +446,20 @@ if stage_selected config; then
   echo "==> config"
   require_link
   echo "    writes: ~/.local/share/fonts/omarchy.ttf, ~/.config desktop configs (backups kept),"
+  echo "    writes: missing ~/.config/omarchy/branding/{about,screensaver}.txt defaults (existing files preserved),"
   echo "    writes: theme state under ~/.local/state/omarchy/, btop theme link, first-run marker"
 
   install -Dm644 "$checkout/default/fonts/omarchy/omarchy.ttf" "$HOME/.local/share/fonts/omarchy.ttf"
   fc-cache -f >/dev/null
+
+  branding_dir="$HOME/.config/omarchy/branding"
+  install -d "$branding_dir"
+  if [[ ! -e $branding_dir/about.txt ]]; then
+    install -m 0644 "$checkout/icon.txt" "$branding_dir/about.txt"
+  fi
+  if [[ ! -e $branding_dir/screensaver.txt ]]; then
+    install -m 0644 "$checkout/logo.txt" "$branding_dir/screensaver.txt"
+  fi
 
   if (( all_configs )); then
     echo "Seeding every shipped config from $checkout/config (existing files are backed up)"
