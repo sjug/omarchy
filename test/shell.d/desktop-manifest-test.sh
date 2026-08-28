@@ -5,9 +5,10 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
 # The desktop manifest exists so checkout-backed installs get the session
-# without the product's boot/storage/login integration. Both properties it
-# claims are enforced here: every package it lists is one the product ships,
-# and none of the integration packages it exists to avoid sneak in.
+# without the product's boot/storage integration. Its one login-integration
+# group is a named opt-in. The properties it claims are enforced here: every
+# package it lists is one the product ships, and broad integration packages do
+# not sneak in.
 mapfile -t product_packages < <(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' \
   "$ROOT/install/omarchy-base.packages" "$ROOT/install/omarchy-other.packages")
 mapfile -t desktop_packages < <(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$ROOT/install/omarchy-desktop.packages")
@@ -40,7 +41,7 @@ pass "desktop manifest lists each package once"
 # must be exactly the stages omarchy-dev-setup-desktop knows, and none may be
 # empty — the command installs by group, so an orphan or a typo'd group name
 # silently drops packages from every stage.
-expected_groups="audio capture connectivity core files power"
+expected_groups="audio capture connectivity core display-manager files power"
 actual_groups=$(awk '/^# group: /{print $3}' "$ROOT/install/omarchy-desktop.packages" | sort | tr '\n' ' ' | sed 's/ $//')
 [[ $actual_groups == "$expected_groups" ]] ||
   fail "manifest groups match the setup stages" "expected: $expected_groups; got: $actual_groups"
@@ -52,7 +53,7 @@ orphans=$(awk '
 ' "$ROOT/install/omarchy-desktop.packages")
 [[ -z $orphans ]] || fail "every manifest package belongs to a group" "before first group marker: $orphans"
 
-for group in core audio files connectivity capture power; do
+for group in core audio files connectivity capture power display-manager; do
   group_count=$(awk -v group="$group" '
     /^# group: / { in_group = ($3 == group); next }
     { sub(/[[:space:]]*#.*$/, "") }
@@ -124,6 +125,17 @@ awk '
   fail "desktop manifest carries tensaku in the capture group"
 pass "desktop manifest carries tensaku in the capture group for screenshot and clipboard editing"
 
+# Login integration is a named opt-in rather than part of the desktop's "all"
+# path. Keep the complete SDDM Wayland package pair together in that group.
+mapfile -t display_manager_packages < <(awk '
+  /^# group: / { in_group = ($3 == "display-manager"); next }
+  { sub(/[[:space:]]*#.*$/, "") }
+  in_group && NF { print }
+' "$ROOT/install/omarchy-desktop.packages")
+[[ ${display_manager_packages[*]} == "qt6-wayland sddm" ]] ||
+  fail "display-manager carries exactly SDDM and its Wayland support" "present: ${display_manager_packages[*]}"
+pass "display-manager carries exactly SDDM and its Wayland support"
+
 # Patterns, not names: the point is that no future limine-*, snapper-*, or
 # similar companion package can slip in when one gets added to the product.
 forbidden_patterns=(
@@ -135,7 +147,6 @@ forbidden_patterns=(
   'omarchy-dev*'
   'omarchy-settings*'
   'plymouth*'
-  'sddm*'
   'snapper*'
   'ufw*'
 )
@@ -152,4 +163,4 @@ done
 if (( ${#integration_present[@]} > 0 )); then
   fail "desktop manifest excludes system-integration packages" "present: ${integration_present[*]}"
 fi
-pass "desktop manifest excludes boot, storage, and login integration packages"
+pass "desktop manifest excludes boot, storage, and broad system-integration packages"

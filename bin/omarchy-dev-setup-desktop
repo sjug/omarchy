@@ -20,13 +20,14 @@ keeps ownership of boot, storage, disk security, networking, and updates:
   - configures nothing in the host's boot, storage, or disk-security stack:
     bootloader, initramfs generation, Secure Boot, disk encryption,
     partitioning, and Snapper are left exactly as they are
-  - installs no display manager and changes no display-manager configuration
-    (the session-entry stage installs a plain session file any greeter may list)
+  - installs no display manager unless the display-manager stage is named
+    explicitly; that stage is excluded from "all" and records a rollback
   - never installs the omarchy or omarchy-settings packages
-  - never enables system services
+  - never enables system services except sddm.service in the explicit
+    display-manager stage
 
-Stages (each prints its package and file changes before acting; each is
-idempotent and safe to re-run):
+Setup stages print their package and file changes before acting and are
+idempotent. The rollback stage consumes its active transaction when complete:
 
   core           Compositor, uwsm, Quickshell, portals, foot, fonts, and the
                  runtime tools Omarchy's desktop scripts invoke. Adds the
@@ -58,8 +59,23 @@ idempotent and safe to re-run):
                  omarchy-apply-lock. Explicit opt-in.
   session-entry  Greeter session file under
                  /usr/local/share/wayland-sessions/. Explicit opt-in.
+  display-manager
+                 Install and configure SDDM with Omarchy's Wayland greeter,
+                 authenticated login, and session entry; enable it for the
+                 next boot without starting it now. Explicit opt-in and never
+                 included in "all". Refuses to replace another display
+                 manager. Records the prior files, enabled state, and default
+                 target before changing them. The minimal greeter logs in
+                 SDDM's remembered last user and intentionally has no user
+                 chooser, matching Omarchy's single-user workstation model.
+  display-manager-rollback
+                 Disable SDDM when this setup enabled it and restore the exact
+                 files and default target recorded by display-manager. Leaves
+                 installed packages in place to avoid removing dependencies
+                 another host package may now use.
   status         Read-only report of what each stage has and hasn't done.
-  all            Every stage above in dependency order (the one-shot setup
+  all            Every desktop stage above in dependency order, through the
+                 session entry, but never display-manager (the one-shot setup
                  for disposable machines and CI).
 
 Package stages run one combined "pacman -Syu --needed" for everything
@@ -67,7 +83,8 @@ selected, so the host's own pacman hooks run exactly as a plain -Syu would —
 a kernel update, for example, rebuilds the host's initramfs with the host's
 configuration.
 
-Dependency order: core -> link -> config; every other stage only needs core.
+Dependency order: core -> link -> config. Display-manager needs all three;
+every other setup stage only needs core. Rollback stands alone.
 
 By default config seeds only the desktop's own configs (Hyprland, the Omarchy
 shell, foot, and the other tools these stages install); --all-configs seeds
@@ -89,8 +106,9 @@ USAGE
 pacman_conf="${OMARCHY_DEV_SETUP_PACMAN_CONF:-/etc/pacman.conf}"
 omarchy_conf="${OMARCHY_DEV_SETUP_OMARCHY_CONF:-/etc/omarchy.conf}"
 omarchy_signing_key="40DFB630FF42BCFFB047046CF0134EE680CAC571"
+current_user=$(id -un)
 
-package_stages=(core audio files connectivity capture power)
+package_stages=(core audio files connectivity capture power display-manager)
 all_stages=(core link config audio files connectivity capture power lock session-entry)
 
 # Only configuration the desktop these stages install actually reads.
@@ -126,7 +144,7 @@ while (($#)); do
       usage
       exit 0
       ;;
-    core|link|config|audio|files|connectivity|capture|power|lock|session-entry|status)
+    core|link|config|audio|files|connectivity|capture|power|lock|session-entry|display-manager|display-manager-rollback|status)
       selected[$1]=1
       shift
       ;;
@@ -150,11 +168,24 @@ if (( ${#selected[@]} == 0 )); then
 fi
 
 if (( session_entry == 0 )); then
+  if [[ -n ${selected[display-manager]:-} ]]; then
+    echo "Error: display-manager requires its Omarchy session entry; remove --no-session-entry." >&2
+    exit 1
+  fi
   unset 'selected[session-entry]'
   if (( ${#selected[@]} == 0 )); then
     echo "Error: --no-session-entry removed the only selected stage; nothing to do." >&2
     exit 1
   fi
+fi
+
+if [[ -n ${selected[display-manager]:-} ]]; then
+  selected[session-entry]=1
+fi
+
+if [[ -n ${selected[display-manager-rollback]:-} ]] && (( ${#selected[@]} != 1 )); then
+  echo "Error: display-manager-rollback must be run by itself." >&2
+  exit 1
 fi
 
 for stage in "${!selected[@]}"; do
@@ -186,6 +217,277 @@ group_packages() {
 
 stage_selected() {
   [[ -n ${selected[$1]:-} ]]
+}
+
+# Test fixtures redirect the system-owned paths into a temporary root. A real
+# invocation always uses the absolute paths below unchanged.
+system_root="${OMARCHY_DEV_SETUP_SYSTEM_ROOT:-}"
+system_path() {
+  printf '%s%s' "$system_root" "$1"
+}
+
+display_manager_state_root="$HOME/.local/state/omarchy/dev-setup-desktop/display-manager"
+display_manager_active_file="$display_manager_state_root/active"
+display_manager_paths=(
+  "$(system_path /etc/sddm.conf.d/10-theme.conf)"
+  "$(system_path /etc/sddm.conf.d/10-wayland.conf)"
+  "$(system_path /etc/sddm.conf.d/99-omarchy-login.conf)"
+  "$(system_path /etc/sddm.conf.d/autologin.conf)"
+  "$(system_path /usr/share/sddm/hyprland.lua)"
+  "$(system_path /usr/share/sddm/themes/omarchy)"
+  "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)"
+  "$(system_path /var/lib/sddm/state.conf)"
+)
+
+config_stage_complete() {
+  [[ -f $HOME/.config/hypr/hyprland.lua &&
+    -f $HOME/.config/omarchy/branding/about.txt &&
+    -f $HOME/.config/omarchy/branding/screensaver.txt &&
+    -f $HOME/.local/state/omarchy/done/first-run-user &&
+    -L $HOME/.config/btop/themes/current.theme ]]
+}
+
+display_manager_transaction_id() {
+  local transaction_id
+
+  [[ -f $display_manager_active_file ]] || return 1
+  IFS= read -r transaction_id <"$display_manager_active_file"
+  [[ $transaction_id =~ ^[0-9]+$ ]] || return 1
+  [[ -d $display_manager_state_root/transactions/$transaction_id ]] || return 1
+  printf '%s' "$transaction_id"
+}
+
+validate_display_manager_transaction() {
+  local transaction_id="$1"
+  local transaction_dir="$display_manager_state_root/transactions/$transaction_id"
+  local index state
+
+  [[ -f $transaction_dir/sddm-enabled-before ]] || return 1
+  state=$(<"$transaction_dir/sddm-enabled-before")
+  [[ $state == "enabled" || $state == "disabled" ]] || return 1
+
+  [[ -f $transaction_dir/default-target-before ]] || return 1
+  state=$(<"$transaction_dir/default-target-before")
+  [[ $state == "graphical.target" || $state == "multi-user.target" ]] || return 1
+
+  for index in "${!display_manager_paths[@]}"; do
+    [[ -f $transaction_dir/path-$index-state ]] || return 1
+    state=$(<"$transaction_dir/path-$index-state")
+    if [[ $state == "present" ]]; then
+      [[ -e $transaction_dir/backup/$index || -L $transaction_dir/backup/$index ]] || return 1
+    elif [[ $state != "absent" ]]; then
+      return 1
+    fi
+  done
+}
+
+display_manager_configured() {
+  local theme_source="$checkout/default/sddm/omarchy"
+  local theme_target
+  theme_target=$(system_path /usr/share/sddm/themes/omarchy)
+
+  package_requirement_satisfied sddm || return 1
+  package_requirement_satisfied qt6-wayland || return 1
+  systemctl is-enabled --quiet sddm.service 2>/dev/null || return 1
+  [[ $(systemctl get-default 2>/dev/null) == "graphical.target" ]] || return 1
+  [[ ! -e $(system_path /etc/sddm.conf.d/autologin.conf) ]] || return 1
+  cmp -s "$checkout/etc/sddm.conf.d/10-theme.conf" "$(system_path /etc/sddm.conf.d/10-theme.conf)" || return 1
+  cmp -s "$checkout/etc/sddm.conf.d/10-wayland.conf" "$(system_path /etc/sddm.conf.d/10-wayland.conf)" || return 1
+  cmp -s "$checkout/default/sddm/hyprland.lua" "$(system_path /usr/share/sddm/hyprland.lua)" || return 1
+  cmp -s "$checkout/default/wayland-sessions/omarchy.desktop" "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)" || return 1
+  diff -qr "$theme_source" "$theme_target" >/dev/null 2>&1 || return 1
+  cmp -s <(printf '[Users]\nRememberLastUser=true\nRememberLastSession=true\n') \
+    "$(system_path /etc/sddm.conf.d/99-omarchy-login.conf)" || return 1
+  # SDDM owns this runtime state and rewrites its contents on login. Require
+  # only a regular file so remembered-user/session updates are not mistaken
+  # for configuration drift.
+  [[ -f $(system_path /var/lib/sddm/state.conf) ]] || return 1
+}
+
+preflight_display_manager() {
+  local source alias_path alias_target default_target transaction_id
+
+  for source in \
+    "$checkout/etc/sddm.conf.d/10-theme.conf" \
+    "$checkout/etc/sddm.conf.d/10-wayland.conf" \
+    "$checkout/default/sddm/hyprland.lua" \
+    "$checkout/default/wayland-sessions/omarchy.desktop" \
+    "$checkout/default/sddm/omarchy/Main.qml" \
+    "$checkout/default/sddm/omarchy/metadata.desktop" \
+    "$checkout/default/sddm/omarchy/theme.conf" \
+    "$checkout/default/sddm/omarchy/bullet.png" \
+    "$checkout/default/sddm/omarchy/entry.png" \
+    "$checkout/default/sddm/omarchy/entry-failed.png" \
+    "$checkout/default/sddm/omarchy/lock.png" \
+    "$checkout/default/sddm/omarchy/lock-failed.png" \
+    "$checkout/default/sddm/omarchy/logo.png"; do
+    if [[ ! -f $source ]]; then
+      echo "Error: required SDDM source is missing: $source" >&2
+      exit 1
+    fi
+  done
+  if [[ ! -d $checkout/default/sddm/omarchy ]]; then
+    echo "Error: required SDDM theme is missing: $checkout/default/sddm/omarchy" >&2
+    exit 1
+  fi
+  if find "$checkout/default/sddm/omarchy" -type l -print -quit | grep -q .; then
+    echo "Error: the SDDM theme contains a symlink; refusing to publish checkout-controlled links under /usr/share/sddm." >&2
+    exit 1
+  fi
+
+  alias_path=$(system_path /etc/systemd/system/display-manager.service)
+  if [[ -e $alias_path || -L $alias_path ]]; then
+    alias_target=$(readlink -f "$alias_path" 2>/dev/null || true)
+    if [[ $(basename "$alias_target") != "sddm.service" ]]; then
+      echo "Error: another display manager owns $alias_path: ${alias_target:-unresolvable}" >&2
+      echo "Disable it explicitly before selecting display-manager; this setup will not replace it." >&2
+      exit 1
+    fi
+  fi
+
+  default_target=$(systemctl get-default 2>/dev/null || true)
+  if [[ $default_target != "graphical.target" && $default_target != "multi-user.target" ]]; then
+    echo "Error: unsupported default systemd target '$default_target'; expected graphical.target or multi-user.target." >&2
+    exit 1
+  fi
+
+  if [[ -f $display_manager_active_file ]]; then
+    transaction_id=$(display_manager_transaction_id || true)
+    if [[ -z $transaction_id ]] || ! validate_display_manager_transaction "$transaction_id"; then
+      echo "Error: the active display-manager rollback record is invalid: $display_manager_active_file" >&2
+      exit 1
+    fi
+  fi
+}
+
+begin_display_manager_transaction() {
+  local transaction_id transaction_dir index path
+
+  transaction_id=$(display_manager_transaction_id || true)
+  if [[ -n $transaction_id ]]; then
+    validate_display_manager_transaction "$transaction_id" || {
+      echo "Error: refusing to reuse an invalid display-manager rollback record." >&2
+      return 1
+    }
+    echo "    rollback: reusing transaction $transaction_id"
+    return 0
+  fi
+
+  transaction_id=$(date +%s%N)
+  transaction_dir="$display_manager_state_root/transactions/$transaction_id"
+  mkdir -p "$transaction_dir/backup"
+  chmod 0700 "$display_manager_state_root" "$display_manager_state_root/transactions" "$transaction_dir" "$transaction_dir/backup"
+
+  if systemctl is-enabled --quiet sddm.service 2>/dev/null; then
+    printf 'enabled\n' >"$transaction_dir/sddm-enabled-before"
+  else
+    printf 'disabled\n' >"$transaction_dir/sddm-enabled-before"
+  fi
+  systemctl get-default >"$transaction_dir/default-target-before"
+
+  for index in "${!display_manager_paths[@]}"; do
+    path="${display_manager_paths[$index]}"
+    if [[ -e $path || -L $path ]]; then
+      printf 'present\n' >"$transaction_dir/path-$index-state"
+      sudo cp -aT "$path" "$transaction_dir/backup/$index"
+    else
+      printf 'absent\n' >"$transaction_dir/path-$index-state"
+    fi
+  done
+
+  printf '%s\n' "$transaction_id" >"$display_manager_active_file.new"
+  mv "$display_manager_active_file.new" "$display_manager_active_file"
+  echo "    rollback: recorded transaction $transaction_id under $display_manager_state_root"
+}
+
+apply_display_manager() {
+  local login_config state_config state_path theme_source theme_target theme_file relative_theme_file
+
+  echo "    writes: /etc/sddm.conf.d/{10-theme,10-wayland,99-omarchy-login}.conf"
+  echo "    writes: /usr/share/sddm/{hyprland.lua,themes/omarchy/}"
+  echo "    writes: /usr/local/share/wayland-sessions/omarchy.desktop"
+  echo "    seeds when absent: /var/lib/sddm/state.conf (last user/session only; no autologin)"
+  echo "    enables: sddm.service for the next boot (not started now)"
+
+  sudo install -Dm644 "$checkout/etc/sddm.conf.d/10-theme.conf" "$(system_path /etc/sddm.conf.d/10-theme.conf)"
+  sudo install -Dm644 "$checkout/etc/sddm.conf.d/10-wayland.conf" "$(system_path /etc/sddm.conf.d/10-wayland.conf)"
+  sudo install -Dm644 "$checkout/default/sddm/hyprland.lua" "$(system_path /usr/share/sddm/hyprland.lua)"
+  sudo install -Dm644 "$checkout/default/wayland-sessions/omarchy.desktop" "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)"
+
+  theme_source="$checkout/default/sddm/omarchy"
+  theme_target=$(system_path /usr/share/sddm/themes/omarchy)
+  sudo rm -rf -- "$theme_target"
+  sudo install -d -m 0755 "$theme_target"
+  while IFS= read -r -d '' theme_file; do
+    relative_theme_file="${theme_file#"$theme_source"/}"
+    sudo install -Dm644 "$theme_file" "$theme_target/$relative_theme_file"
+  done < <(find "$theme_source" -type f -print0)
+
+  login_config=$(mktemp)
+  printf '[Users]\nRememberLastUser=true\nRememberLastSession=true\n' >"$login_config"
+  sudo install -Dm644 "$login_config" "$(system_path /etc/sddm.conf.d/99-omarchy-login.conf)"
+  rm -f "$login_config"
+
+  # Authentication is deliberate on this host. Remove any existing autologin
+  # only after it has been captured by the rollback transaction above.
+  sudo rm -f -- "$(system_path /etc/sddm.conf.d/autologin.conf)"
+
+  state_path=$(system_path /var/lib/sddm/state.conf)
+  if [[ ! -e $state_path && ! -L $state_path ]]; then
+    state_config=$(mktemp)
+    printf '[Last]\nSession=omarchy.desktop\nUser=%s\n' "$current_user" >"$state_config"
+    sudo install -Dm644 "$state_config" "$state_path"
+    sudo chown sddm:sddm "$state_path"
+    rm -f "$state_config"
+  fi
+
+  if [[ $(systemctl get-default) == "multi-user.target" ]]; then
+    sudo systemctl set-default graphical.target
+  fi
+  sudo systemctl enable sddm.service
+}
+
+rollback_display_manager() {
+  local transaction_id transaction_dir index path state previous_target
+
+  transaction_id=$(display_manager_transaction_id || true)
+  if [[ -z $transaction_id ]] || ! validate_display_manager_transaction "$transaction_id"; then
+    echo "Error: no valid active display-manager rollback record exists." >&2
+    return 1
+  fi
+  transaction_dir="$display_manager_state_root/transactions/$transaction_id"
+
+  echo "==> display-manager-rollback"
+  echo "    restoring transaction: $transaction_id"
+  for ((index = ${#display_manager_paths[@]} - 1; index >= 0; index--)); do
+    path="${display_manager_paths[$index]}"
+    state=$(<"$transaction_dir/path-$index-state")
+    sudo rm -rf -- "$path"
+    if [[ $state == "present" ]]; then
+      sudo install -d -m 0755 "$(dirname "$path")"
+      sudo cp -aT "$transaction_dir/backup/$index" "$path"
+    fi
+  done
+
+  if [[ $(<"$transaction_dir/sddm-enabled-before") == "enabled" ]]; then
+    if ! sudo systemctl enable sddm.service; then
+      echo "Warning: could not restore SDDM's enabled state; continuing the file and target rollback." >&2
+    fi
+  else
+    if ! sudo systemctl disable sddm.service; then
+      echo "Warning: could not restore SDDM's disabled state; continuing the file and target rollback." >&2
+    fi
+  fi
+
+  previous_target=$(<"$transaction_dir/default-target-before")
+  if [[ $(systemctl get-default) != "$previous_target" ]]; then
+    sudo systemctl set-default "$previous_target"
+  fi
+
+  printf '%s\n' "$(date --iso-8601=seconds)" >"$transaction_dir/rolled-back-at"
+  rm -f "$display_manager_active_file"
+  echo "    restored prior SDDM files and default target; attempted to restore the enabled state"
+  echo "    retained packages: sddm qt6-wayland (safe, inert when the service is disabled)"
 }
 
 # The product uses the four-face basic package to keep fresh installs small.
@@ -262,11 +564,7 @@ if stage_selected status; then
   else
     echo "  link: uwsm environment absent"
   fi
-  if [[ -f $HOME/.config/hypr/hyprland.lua &&
-    -f $HOME/.config/omarchy/branding/about.txt &&
-    -f $HOME/.config/omarchy/branding/screensaver.txt &&
-    -f $HOME/.local/state/omarchy/done/first-run-user &&
-    -L $HOME/.config/btop/themes/current.theme ]]; then
+  if config_stage_complete; then
     echo "  config: seeded (theme: $(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo none))"
   else
     echo "  config: not seeded"
@@ -276,10 +574,22 @@ if stage_selected status; then
   else
     echo "  lock: PAM services absent"
   fi
-  if [[ -f /usr/local/share/wayland-sessions/omarchy.desktop ]]; then
+  if [[ -f $(system_path /usr/local/share/wayland-sessions/omarchy.desktop) ]]; then
     echo "  session-entry: present"
   else
     echo "  session-entry: absent"
+  fi
+  if display_manager_configured; then
+    echo "  display-manager: configured and enabled"
+  else
+    echo "  display-manager: not configured"
+  fi
+  if transaction_id=$(display_manager_transaction_id 2>/dev/null) && validate_display_manager_transaction "$transaction_id"; then
+    echo "  display-manager-rollback: available (transaction $transaction_id)"
+  elif [[ -f $display_manager_active_file ]]; then
+    echo "  display-manager-rollback: invalid active record"
+  else
+    echo "  display-manager-rollback: unavailable"
   fi
   if (( status_only )); then
     exit 0
@@ -329,6 +639,17 @@ for product_pkg in omarchy omarchy-dev omarchy-settings omarchy-settings-dev; do
   fi
 done
 
+if stage_selected display-manager-rollback; then
+  transaction_id=$(display_manager_transaction_id || true)
+  if [[ -z $transaction_id ]] || ! validate_display_manager_transaction "$transaction_id"; then
+    echo "Error: no valid active display-manager rollback record exists." >&2
+    exit 1
+  fi
+  sudo -v
+  rollback_display_manager
+  exit 0
+fi
+
 # Validate the staged dependency graph before a package transaction or any
 # other write. In particular, "core config" without link must not upgrade the
 # system and only then discover that config cannot run.
@@ -336,9 +657,20 @@ if stage_selected config && ! stage_selected link; then
   require_link
 fi
 
+if stage_selected display-manager; then
+  if ! stage_selected link; then
+    require_link
+  fi
+  if ! stage_selected config && ! config_stage_complete; then
+    echo "Error: display-manager needs the seeded desktop config — run 'omarchy-dev-setup-desktop config' first." >&2
+    exit 1
+  fi
+  preflight_display_manager
+fi
+
 requires_core=0
 for stage in "${!selected[@]}"; do
-  if [[ $stage != "core" && $stage != "status" ]]; then
+  if [[ $stage != "core" && $stage != "status" && $stage != "display-manager-rollback" ]]; then
     requires_core=1
     break
   fi
@@ -388,7 +720,10 @@ fi
 if stage_selected core && ! grep -q '^\[omarchy\]' "$pacman_conf"; then
   echo "    writes: [omarchy] repo stanza in $pacman_conf (backup kept)"
   sudo cp -f "$pacman_conf" "$pacman_conf.omarchy-dev-setup-desktop.$(date +%s).bak"
-  printf '\n[omarchy]\nSigLevel = Optional TrustAll\nServer = https://pkgs.omarchy.org/stable/$arch\n' | sudo tee -a "$pacman_conf" >/dev/null
+  # Omarchy packages carry detached signatures, while the repository database
+  # is currently unsigned. Require package signatures without requiring a
+  # database signature that the repository does not publish.
+  printf '\n[omarchy]\nSigLevel = Required DatabaseOptional\nServer = https://pkgs.omarchy.org/stable/$arch\n' | sudo tee -a "$pacman_conf" >/dev/null
 fi
 
 if stage_selected core; then
@@ -522,19 +857,35 @@ if stage_selected lock; then
   omarchy-apply-lock
 fi
 
+# A display-manager run owns the session entry as part of its rollback boundary,
+# so capture the baseline immediately before either stage writes that file.
+if stage_selected display-manager; then
+  echo "==> display-manager"
+  echo "    rollback: records the prior SDDM files, enabled state, and default target before configuration"
+  begin_display_manager_transaction
+fi
+
 # --- session-entry: explicit opt-in greeter session file.
 if stage_selected session-entry; then
   echo "==> session-entry"
   echo "    writes: /usr/local/share/wayland-sessions/omarchy.desktop"
-  sudo install -Dm644 "$checkout/default/wayland-sessions/omarchy.desktop" /usr/local/share/wayland-sessions/omarchy.desktop
+  sudo install -Dm644 "$checkout/default/wayland-sessions/omarchy.desktop" "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)"
+fi
+
+# --- display-manager: explicit SDDM integration. It runs after the independent
+# session entry, using the baseline recorded immediately before that entry was
+# written. The service is enabled, never started in-place.
+if stage_selected display-manager; then
+  apply_display_manager
 fi
 
 cat <<'DONE'
 
 Left unconfigured, deliberately: bootloader, initramfs, Secure Boot,
-encryption, storage, Snapper, display managers, system services, and the
-omarchy/omarchy-settings packages. The optional user units a packaged
-install enables (bluetooth pairing agent, sleep lock, ...) were not set up
-either; see install/user/first-run/enable-user-units.sh for that list.
+encryption, storage, Snapper, general system services, and the
+omarchy/omarchy-settings packages. SDDM is configured and enabled only when
+the explicit display-manager stage is selected. The optional user units a
+packaged install enables (bluetooth pairing agent, sleep lock, ...) were not
+set up either; see install/user/first-run/enable-user-units.sh for that list.
 Run "omarchy-dev-setup-desktop status" to see what is and isn't in place.
 DONE

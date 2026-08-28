@@ -17,14 +17,17 @@ sudo_log="$test_tmp/sudo.log"
 call_log="$test_tmp/calls.log"
 pacman_conf="$test_tmp/pacman.conf"
 omarchy_conf="$test_tmp/omarchy.conf"
+system_root="$test_tmp/system-root"
+systemctl_state="$test_tmp/systemctl.state"
 
 mkdir -p "$stub_bin" "$test_home" \
   "$fake_checkout/bin" "$fake_checkout/install" \
   "$fake_checkout/themes/tokyo-night" "$fake_checkout/themes/catppuccin" \
   "$fake_checkout/default/fonts/omarchy" "$fake_checkout/default/bash" \
   "$fake_checkout/default/uwsm/env.d" "$fake_checkout/default/wayland-sessions" \
+  "$fake_checkout/default/sddm/omarchy" "$fake_checkout/etc/sddm.conf.d" \
   "$fake_checkout/config/hypr" "$fake_checkout/config/foot" \
-  "$fake_checkout/config/git" "$fake_checkout/config/tmux"
+  "$fake_checkout/config/git" "$fake_checkout/config/tmux" "$system_root"
 
 cp "$ROOT/bin/omarchy-dev-setup-desktop" "$fake_checkout/bin/"
 cp "$ROOT/bin/omarchy-cmd-present" "$fake_checkout/bin/"
@@ -50,6 +53,9 @@ bluez
 grim
 # group: power
 brightnessctl
+# group: display-manager
+qt6-wayland
+sddm
 PKGS
 
 echo 'lua' >"$fake_checkout/config/hypr/hyprland.lua"
@@ -60,6 +66,15 @@ echo 'tmux' >"$fake_checkout/config/tmux/tmux.conf"
 : >"$fake_checkout/default/bash/env-bootstrap"
 : >"$fake_checkout/default/uwsm/env.d/10-omarchy"
 printf '[Desktop Entry]\n' >"$fake_checkout/default/wayland-sessions/omarchy.desktop"
+printf '[Theme]\nCurrent=omarchy\n' >"$fake_checkout/etc/sddm.conf.d/10-theme.conf"
+printf '[General]\nDisplayServer=wayland\n' >"$fake_checkout/etc/sddm.conf.d/10-wayland.conf"
+echo 'hyprland greeter config' >"$fake_checkout/default/sddm/hyprland.lua"
+echo 'sddm theme' >"$fake_checkout/default/sddm/omarchy/Main.qml"
+echo 'sddm metadata' >"$fake_checkout/default/sddm/omarchy/metadata.desktop"
+echo 'sddm theme config' >"$fake_checkout/default/sddm/omarchy/theme.conf"
+for theme_asset in bullet.png entry.png entry-failed.png lock.png lock-failed.png logo.png; do
+  : >"$fake_checkout/default/sddm/omarchy/$theme_asset"
+done
 echo 'about branding' >"$fake_checkout/icon.txt"
 echo 'screensaver branding' >"$fake_checkout/logo.txt"
 
@@ -69,6 +84,12 @@ printf '%s\n' "$*" >>"$OMARCHY_TEST_SUDO_LOG"
 if [[ $1 == "pacman-key" && $2 == "--list-keys" && ${OMARCHY_TEST_KEY_PRESENT:-0} == 0 ]]; then
   exit 1
 fi
+case "$1" in
+  cp|install|rm|systemctl|tee)
+    "$@"
+    exit
+    ;;
+esac
 if [[ ! -t 0 ]]; then
   cat >/dev/null
 fi
@@ -92,6 +113,40 @@ if [[ $1 == "-Q" && -n ${2:-} ]]; then
   exit 1
 fi
 exit 0
+SH
+
+cat >"$stub_bin/systemctl" <<'SH'
+#!/bin/bash
+case "$1" in
+  get-default)
+    sed -n 's/^default=//p' "$OMARCHY_TEST_SYSTEMCTL_STATE"
+    ;;
+  is-enabled)
+    unit="${@: -1}"
+    if [[ $unit == "sddm.service" ]] && grep -qx 'sddm=enabled' "$OMARCHY_TEST_SYSTEMCTL_STATE"; then
+      [[ $2 == "--quiet" ]] || echo enabled
+      exit 0
+    else
+      [[ ${2:-} == "--quiet" ]] || echo disabled
+      exit 1
+    fi
+    ;;
+  enable)
+    if grep -qx 'sddm=missing' "$OMARCHY_TEST_SYSTEMCTL_STATE"; then
+      exit 1
+    fi
+    sed -i 's/^sddm=.*/sddm=enabled/' "$OMARCHY_TEST_SYSTEMCTL_STATE"
+    ;;
+  disable)
+    if grep -qx 'sddm=missing' "$OMARCHY_TEST_SYSTEMCTL_STATE"; then
+      exit 1
+    fi
+    sed -i 's/^sddm=.*/sddm=disabled/' "$OMARCHY_TEST_SYSTEMCTL_STATE"
+    ;;
+  set-default)
+    sed -i "s/^default=.*/default=$2/" "$OMARCHY_TEST_SYSTEMCTL_STATE"
+    ;;
+esac
 SH
 
 cat >"$stub_bin/xdg-mime" <<'SH'
@@ -134,17 +189,36 @@ run_setup() {
     OMARCHY_TEST_PRODUCT_INSTALLED="${OMARCHY_TEST_PRODUCT_INSTALLED:-}" \
     OMARCHY_TEST_INSTALLED_PACKAGES="${OMARCHY_TEST_INSTALLED_PACKAGES:-}" \
     OMARCHY_TEST_KEY_PRESENT="${OMARCHY_TEST_KEY_PRESENT:-0}" \
+    OMARCHY_TEST_SYSTEMCTL_STATE="$systemctl_state" \
     OMARCHY_DEV_SETUP_PACMAN_CONF="$pacman_conf" \
     OMARCHY_DEV_SETUP_OMARCHY_CONF="$omarchy_conf" \
+    OMARCHY_DEV_SETUP_SYSTEM_ROOT="$system_root" \
     bash "$fake_checkout/bin/omarchy-dev-setup-desktop" "$@"
 }
 
 reset_run() {
   rm -rf "$test_home"
   mkdir -p "$test_home"
+  rm -rf "$system_root"
+  mkdir -p "$system_root"
   rm -f "$omarchy_conf"
+  printf 'sddm=disabled\ndefault=graphical.target\n' >"$systemctl_state"
   : >"$sudo_log"
   : >"$call_log"
+}
+
+seed_display_manager_prerequisites() {
+  printf 'export OMARCHY_PATH=%s\n' "$fake_checkout" >"$omarchy_conf"
+  mkdir -p \
+    "$test_home/.config/hypr" \
+    "$test_home/.config/omarchy/branding" \
+    "$test_home/.config/btop/themes" \
+    "$test_home/.local/state/omarchy/done"
+  : >"$test_home/.config/hypr/hyprland.lua"
+  : >"$test_home/.config/omarchy/branding/about.txt"
+  : >"$test_home/.config/omarchy/branding/screensaver.txt"
+  : >"$test_home/.local/state/omarchy/done/first-run-user"
+  ln -s "$test_home/generated-btop.theme" "$test_home/.config/btop/themes/current.theme"
 }
 
 # --- No stage or an unknown stage is a usage error, not a silent default.
@@ -244,6 +318,13 @@ fi
 [[ ! -s $sudo_log ]] || fail "the contradictory flag combination fails before sudo" "$(<"$sudo_log")"
 pass "session-entry plus --no-session-entry is refused"
 
+reset_run
+if run_setup display-manager --no-session-entry >/dev/null 2>&1; then
+  fail "display-manager accepts --no-session-entry"
+fi
+[[ ! -s $sudo_log ]] || fail "the display-manager session-entry conflict fails before sudo" "$(<"$sudo_log")"
+pass "display-manager cannot be separated from the session entry it launches"
+
 # --- Dependency failures are preflighted before a selected package stage acts.
 reset_run
 printf '[core]\nInclude = /etc/pacman.d/mirrorlist\n' >"$pacman_conf"
@@ -305,6 +386,8 @@ run_setup core >/dev/null
 grep -qx "pacman -Syu --needed hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring" "$sudo_log" ||
   fail "core installs exactly the comment-stripped core group" "$(<"$sudo_log")"
 grep -q "tee -a $pacman_conf" "$sudo_log" || fail "core adds the repo stanza when missing" "$(<"$sudo_log")"
+grep -qx 'SigLevel = Required DatabaseOptional' "$pacman_conf" ||
+  fail "core requires Omarchy package signatures while permitting the unsigned repository database" "$(<"$pacman_conf")"
 grep -qx "pacman-key --recv-keys 40DFB630FF42BCFFB047046CF0134EE680CAC571 --keyserver keys.openpgp.org" "$sudo_log" ||
   fail "core imports only the pinned Omarchy signing key" "$(<"$sudo_log")"
 grep -qx "pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571" "$sudo_log" ||
@@ -356,12 +439,131 @@ fi
 reset_run
 printf '[omarchy]\nServer = x\n' >"$pacman_conf"
 OMARCHY_TEST_INSTALLED_PACKAGES="hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring" run_setup session-entry >/dev/null
-grep -qx "install -Dm644 $fake_checkout/default/wayland-sessions/omarchy.desktop /usr/local/share/wayland-sessions/omarchy.desktop" "$sudo_log" ||
+grep -qx "install -Dm644 $fake_checkout/default/wayland-sessions/omarchy.desktop $system_root/usr/local/share/wayland-sessions/omarchy.desktop" "$sudo_log" ||
   fail "session-entry installs the greeter session file" "$(<"$sudo_log")"
 if (( $(wc -l <"$sudo_log") != 2 )); then
   fail "session-entry makes exactly two direct sudo invocations" "$(<"$sudo_log")"
 fi
 pass "lock and session-entry are independent opt-in stages"
+
+# --- display-manager refuses to take over another greeter's systemd alias.
+reset_run
+printf '[omarchy]\nServer = x\n' >"$pacman_conf"
+seed_display_manager_prerequisites
+mkdir -p "$system_root/etc/systemd/system"
+ln -s /usr/lib/systemd/system/gdm.service "$system_root/etc/systemd/system/display-manager.service"
+if OMARCHY_TEST_INSTALLED_PACKAGES="hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring" \
+  run_setup display-manager >/dev/null 2>&1; then
+  fail "display-manager replaces an existing non-SDDM display manager"
+fi
+[[ ! -s $sudo_log ]] || fail "the display-manager conflict is refused before sudo" "$(<"$sudo_log")"
+pass "display-manager refuses to replace another greeter"
+
+# --- display-manager records one baseline, configures authenticated SDDM for
+# the next boot, and rolls every owned path and boot target back exactly.
+reset_run
+printf '[omarchy]\nServer = x\n' >"$pacman_conf"
+seed_display_manager_prerequisites
+printf 'sddm=disabled\ndefault=multi-user.target\n' >"$systemctl_state"
+mkdir -p \
+  "$system_root/etc/sddm.conf.d" \
+  "$system_root/usr/share/sddm/themes/omarchy" \
+  "$system_root/var/lib/sddm"
+echo 'original theme config' >"$system_root/etc/sddm.conf.d/10-theme.conf"
+echo 'original autologin' >"$system_root/etc/sddm.conf.d/autologin.conf"
+echo 'original theme asset' >"$system_root/usr/share/sddm/themes/omarchy/original.qml"
+echo 'original state' >"$system_root/var/lib/sddm/state.conf"
+
+core_packages="hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring"
+OMARCHY_TEST_INSTALLED_PACKAGES="$core_packages" run_setup display-manager >/dev/null
+
+grep -qx "pacman -Syu --needed qt6-wayland sddm" "$sudo_log" ||
+  fail "display-manager installs exactly SDDM and Qt Wayland support" "$(<"$sudo_log")"
+grep -qx "systemctl set-default graphical.target" "$sudo_log" ||
+  fail "display-manager moves a multi-user host to graphical.target" "$(<"$sudo_log")"
+grep -qx "systemctl enable sddm.service" "$sudo_log" ||
+  fail "display-manager enables SDDM without starting it" "$(<"$sudo_log")"
+grep -qx "install -Dm644 $fake_checkout/default/sddm/omarchy/Main.qml $system_root/usr/share/sddm/themes/omarchy/Main.qml" "$sudo_log" ||
+  fail "display-manager publishes theme files through root-owned installs" "$(<"$sudo_log")"
+if grep -q "cp -a $fake_checkout/default/sddm/omarchy" "$sudo_log"; then
+  fail "display-manager preserves user ownership from the checkout into the greeter theme" "$(<"$sudo_log")"
+fi
+if grep -q "systemctl start\|systemctl restart\|autologin.conf.*install" "$sudo_log"; then
+  fail "display-manager neither starts a live greeter nor installs autologin" "$(<"$sudo_log")"
+fi
+cmp -s "$fake_checkout/etc/sddm.conf.d/10-theme.conf" "$system_root/etc/sddm.conf.d/10-theme.conf" ||
+  fail "display-manager installs the Omarchy SDDM theme selection"
+cmp -s "$fake_checkout/default/wayland-sessions/omarchy.desktop" "$system_root/usr/local/share/wayland-sessions/omarchy.desktop" ||
+  fail "display-manager installs the Omarchy UWSM session entry"
+[[ ! -e $system_root/etc/sddm.conf.d/autologin.conf ]] || fail "display-manager removes autologin"
+grep -qx 'original state' "$system_root/var/lib/sddm/state.conf" ||
+  fail "display-manager overwrites pre-existing SDDM runtime state"
+
+active_record="$test_home/.local/state/omarchy/dev-setup-desktop/display-manager/active"
+[[ -f $active_record ]] || fail "display-manager records an active rollback transaction"
+transaction_id=$(<"$active_record")
+transaction_dir="$test_home/.local/state/omarchy/dev-setup-desktop/display-manager/transactions/$transaction_id"
+[[ -d $transaction_dir ]] || fail "display-manager keeps the rollback payload"
+[[ $(stat -c %a "$test_home/.local/state/omarchy/dev-setup-desktop/display-manager") == "700" ]] ||
+  fail "display-manager keeps rollback state private to the user"
+printf '[Last]\nSession=/usr/local/share/wayland-sessions/omarchy.desktop\nUser=remembered-user\n' \
+  >"$system_root/var/lib/sddm/state.conf"
+status_output=$(OMARCHY_TEST_INSTALLED_PACKAGES="$core_packages sddm qt6-wayland" run_setup status)
+grep -q 'display-manager: configured and enabled' <<<"$status_output" ||
+  fail "status recognizes a complete display-manager setup" "$status_output"
+grep -q "display-manager-rollback: available (transaction $transaction_id)" <<<"$status_output" ||
+  fail "status reports the active display-manager rollback" "$status_output"
+pass "display-manager installs authenticated SDDM for the next boot with a rollback baseline"
+
+: >"$sudo_log"
+: >"$call_log"
+OMARCHY_TEST_INSTALLED_PACKAGES="$core_packages sddm qt6-wayland" run_setup display-manager >/dev/null
+[[ $(<"$active_record") == "$transaction_id" ]] || fail "an idempotent display-manager rerun replaces its original baseline"
+(( $(find "$test_home/.local/state/omarchy/dev-setup-desktop/display-manager/transactions" -mindepth 1 -maxdepth 1 -type d | wc -l) == 1 )) ||
+  fail "an idempotent display-manager rerun creates a second transaction"
+grep -qx 'User=remembered-user' "$system_root/var/lib/sddm/state.conf" ||
+  fail "a display-manager rerun clobbers SDDM's remembered runtime state"
+pass "display-manager reruns preserve the original rollback boundary and SDDM runtime state"
+
+: >"$sudo_log"
+rollback_output=$(OMARCHY_TEST_INSTALLED_PACKAGES='' run_setup display-manager-rollback)
+grep -qx "systemctl disable sddm.service" "$sudo_log" ||
+  fail "rollback restores SDDM's disabled state" "$(<"$sudo_log")"
+grep -qx "systemctl set-default multi-user.target" "$sudo_log" ||
+  fail "rollback restores the prior default target" "$(<"$sudo_log")"
+grep -qx 'original theme config' "$system_root/etc/sddm.conf.d/10-theme.conf" ||
+  fail "rollback restores the original SDDM config"
+grep -qx 'original autologin' "$system_root/etc/sddm.conf.d/autologin.conf" ||
+  fail "rollback restores the original autologin policy"
+grep -qx 'original theme asset' "$system_root/usr/share/sddm/themes/omarchy/original.qml" ||
+  fail "rollback restores the original SDDM theme directory"
+grep -qx 'original state' "$system_root/var/lib/sddm/state.conf" ||
+  fail "rollback restores the original SDDM state"
+[[ ! -e $system_root/usr/local/share/wayland-sessions/omarchy.desktop ]] ||
+  fail "rollback removes a session entry that was absent before setup"
+[[ ! -e $active_record ]] || fail "a completed rollback remains active"
+grep -q 'retained packages: sddm qt6-wayland' <<<"$rollback_output" ||
+  fail "rollback states its conservative package-retention boundary" "$rollback_output"
+pass "display-manager rollback restores files, service state, and target while retaining inert packages"
+
+# --- Rollback still restores its files and target, consumes the transaction,
+# and reports the service-state problem if SDDM was removed out of band.
+reset_run
+printf '[omarchy]\nServer = x\n' >"$pacman_conf"
+seed_display_manager_prerequisites
+printf 'sddm=disabled\ndefault=multi-user.target\n' >"$systemctl_state"
+OMARCHY_TEST_INSTALLED_PACKAGES="$core_packages" run_setup display-manager >/dev/null
+grep -qx 'Session=omarchy.desktop' "$system_root/var/lib/sddm/state.conf" ||
+  fail "display-manager does not seed the Omarchy session when SDDM runtime state is absent"
+printf 'sddm=missing\ndefault=graphical.target\n' >"$systemctl_state"
+rollback_output=$(OMARCHY_TEST_INSTALLED_PACKAGES='' run_setup display-manager-rollback 2>&1)
+grep -q "Warning: could not restore SDDM's disabled state" <<<"$rollback_output" ||
+  fail "rollback does not report a missing SDDM unit" "$rollback_output"
+grep -qx 'default=multi-user.target' "$systemctl_state" ||
+  fail "a missing SDDM unit prevents rollback from restoring the default target" "$(<"$systemctl_state")"
+[[ ! -e $test_home/.local/state/omarchy/dev-setup-desktop/display-manager/active ]] ||
+  fail "a missing SDDM unit leaves the rollback transaction armed"
+pass "display-manager rollback completes when the SDDM unit disappeared"
 
 # --- all: every stage in dependency order, repo missing from pacman.conf.
 reset_run
@@ -373,7 +575,7 @@ grep -q "cp -f $pacman_conf $pacman_conf.omarchy-dev-setup-desktop." "$sudo_log"
   fail "pacman.conf is backed up before the repo is added" "$(<"$sudo_log")"
 grep -qx "pacman -Syu --needed hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring alsa-utils nautilus bluez grim brightnessctl" "$sudo_log" ||
   fail "all installs every package group in one transaction" "$(<"$sudo_log")"
-grep -qx "install -Dm644 $fake_checkout/default/wayland-sessions/omarchy.desktop /usr/local/share/wayland-sessions/omarchy.desktop" "$sudo_log" ||
+grep -qx "install -Dm644 $fake_checkout/default/wayland-sessions/omarchy.desktop $system_root/usr/local/share/wayland-sessions/omarchy.desktop" "$sudo_log" ||
   fail "the session entry lands in /usr/local/share/wayland-sessions" "$(<"$sudo_log")"
 if (( $(wc -l <"$sudo_log") != 8 )); then
   fail "no direct sudo invocations happen beyond the expected eight" "$(<"$sudo_log")"

@@ -103,7 +103,11 @@ for base in ("bin", "install", "migrations"):
         tokens = re.sub(r"[12]?>\s*\S+", "", code).split()
         if not tokens or not tokens[-1].startswith("/usr/"):
           continue
-        hit = tokens[-1].rstrip("/")
+        # A path passed through a quoted command substitution can retain its
+        # closing shell punctuation after split(), for example
+        # /usr/share/example.conf)". Normalize that before checking package
+        # ownership so variable-wrapped destinations are not false positives.
+        hit = tokens[-1].strip("\"'()").rstrip("/")
       # Omarchy's own tree and its binaries are covered elsewhere.
       if hit.startswith(("/usr/share/omarchy", "/usr/bin")) or hit.count("/") < 3:
         continue

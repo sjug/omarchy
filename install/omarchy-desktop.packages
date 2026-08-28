@@ -4,8 +4,9 @@
 # The desktop packages are a strict subset of the product package set
 # (omarchy-base.packages plus omarchy-other.packages), with omarchy-keyring as
 # the one bootstrap addition needed to verify packages from the Omarchy repo.
-# The list deliberately excludes every boot, storage, login, and system
-# integration package (limine, snapper, plymouth, sddm, docker, ufw, ...).
+# The default stages deliberately exclude boot, storage, and broad system
+# integration packages (limine, snapper, plymouth, docker, ufw, ...). The
+# display-manager group is a named opt-in and is not included by "all".
 #
 # "# group: <name>" markers split the set into the stages
 # omarchy-dev-setup-desktop installs independently.
@@ -92,3 +93,9 @@ zbar
 # Brightness keys and the power-profile switching the session initializes.
 brightnessctl
 power-profiles-daemon
+
+# group: display-manager
+# Optional graphical login. Kept out of "all" because it enables a system
+# service and takes ownership of the display-manager slot at boot.
+qt6-wayland
+sddm
