@@ -319,6 +319,8 @@ The package lists the ISO pacstraps live at `install/omarchy-base.packages`
 and `install/omarchy-other.packages`; the ISO builder also reads them when
 constructing its offline mirror.
 
+`install/omarchy-desktop.packages` is a strict subset of the two product lists combined, plus the `omarchy-keyring` bootstrap needed to verify packages from the Omarchy repo: just the desktop session, consumed stage-by-stage by `omarchy-dev-setup-desktop` (its `# group:` markers map packages to the command's stages) to set up the Omarchy desktop from a source checkout on an Arch system Omarchy did not install, leaving boot, storage, disk security, and display-manager integration to the host. Outside `$HOME`, it adds the Omarchy pacman repository and pinned package key under `/etc/pacman.d/gnupg`, a root-owned `/etc/omarchy.conf` pointing at the checkout, and only when explicitly selected, lock-screen PAM services or a greeter session entry. Its production link mode deliberately removes the development sudoers policy that puts the user-writable checkout on root's `secure_path`. `test/shell.d/desktop-manifest-test.sh` keeps the package set grouped, within that boundary, and free of integration packages.
+
 ## Explicit resync (`omarchy-reinstall-configs`)
 
 When an existing user wants to reset to shipped defaults:

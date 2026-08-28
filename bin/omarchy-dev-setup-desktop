@@ -1,0 +1,512 @@
+#!/bin/bash
+
+# omarchy:summary=Install the Omarchy desktop from this checkout onto a plain Arch system, in stages
+# omarchy:group=dev
+# omarchy:args=<stage>... [--theme <name>] [--all-configs] [--no-session-entry]
+# omarchy:examples=omarchy dev setup desktop core | omarchy dev setup desktop link config | omarchy dev setup desktop status | omarchy dev setup desktop all
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: omarchy-dev-setup-desktop <stage>... [--theme <name>] [--all-configs] [--no-session-entry]
+
+Sets up the Omarchy desktop (Hyprland + Quickshell + themes) from this source
+checkout on an Arch system that Omarchy did not install, one stage at a time.
+It refuses to run where the omarchy product packages are installed. The host
+keeps ownership of boot, storage, disk security, networking, and updates:
+
+  - configures nothing in the host's boot, storage, or disk-security stack:
+    bootloader, initramfs generation, Secure Boot, disk encryption,
+    partitioning, and Snapper are left exactly as they are
+  - installs no display manager and changes no display-manager configuration
+    (the session-entry stage installs a plain session file any greeter may list)
+  - never installs the omarchy or omarchy-settings packages
+  - never enables system services
+
+Stages (each prints its package and file changes before acting; each is
+idempotent and safe to re-run):
+
+  core           Compositor, uwsm, Quickshell, portals, foot, fonts, and the
+                 runtime tools Omarchy's desktop scripts invoke. Adds the
+                 [omarchy] pacman repo if absent (timestamped .bak kept), pins
+                 its signing key, and installs omarchy-keyring. The pinned key
+                 is added to /etc/pacman.d/gnupg when absent.
+  link           Point the system at this checkout: /etc/omarchy.conf via
+                 omarchy-dev-link --no-sudo-path, plus
+                 ~/.config/uwsm/env.d/10-omarchy (existing file backed up to
+                 ~/.config/uwsm/backups/). The development sudoers policy
+                 that puts the checkout on root's secure_path is deliberately
+                 NOT installed: omarchy commands escalate internally, and a
+                 user-writable bin/ on secure_path is a development trust
+                 grant, not a production one. Developers who want
+                 "sudo omarchy-*" resolution run omarchy-dev-link directly.
+  config         Seed desktop configs into ~/.config (backups kept), install
+                 the icon font, generate the initial theme, and mark
+                 package-dependent first-run provisioning complete.
+                 Requires link.
+  audio          PipeWire pulse/alsa bridges, WirePlumber, volume controls.
+  files          File manager, previews, mounts, automount; registers the
+                 default directory handler when xdg-mime is available.
+  connectivity   Network and bluetooth daemons for the shell's panels
+                 (installed only, never enabled).
+  capture        Screenshots, recording, color picker, OCR, QR tools.
+  power          Brightness and power-profile controls.
+  lock           Lock-screen PAM services (/etc/pam.d/omarchy-lock-*) via
+                 omarchy-apply-lock. Explicit opt-in.
+  session-entry  Greeter session file under
+                 /usr/local/share/wayland-sessions/. Explicit opt-in.
+  status         Read-only report of what each stage has and hasn't done.
+  all            Every stage above in dependency order (the one-shot setup
+                 for disposable machines and CI).
+
+Package stages run one combined "pacman -Syu --needed" for everything
+selected, so the host's own pacman hooks run exactly as a plain -Syu would —
+a kernel update, for example, rebuilds the host's initramfs with the host's
+configuration.
+
+Dependency order: core -> link -> config; every other stage only needs core.
+
+By default config seeds only the desktop's own configs (Hyprland, the Omarchy
+shell, foot, and the other tools these stages install); --all-configs seeds
+every shipped config (git, tmux, Chromium, ...) the way a packaged install
+would.
+
+Update the desktop with git pull in the checkout, and the system with plain
+pacman -Syu. Do not run omarchy update here: it drives the packaged product.
+
+Options:
+  --theme <name>      Initial theme for the config stage (default: tokyo-night)
+  --all-configs       Seed every shipped config, not just the desktop's
+  --no-session-entry  Drop the session-entry stage from "all"
+  -h, --help          Show this help
+USAGE
+}
+
+# Overridable for tests only; real runs always target the /etc paths.
+pacman_conf="${OMARCHY_DEV_SETUP_PACMAN_CONF:-/etc/pacman.conf}"
+omarchy_conf="${OMARCHY_DEV_SETUP_OMARCHY_CONF:-/etc/omarchy.conf}"
+omarchy_signing_key="40DFB630FF42BCFFB047046CF0134EE680CAC571"
+
+package_stages=(core audio files connectivity capture power)
+all_stages=(core link config audio files connectivity capture power lock session-entry)
+
+# Only configuration the desktop these stages install actually reads.
+# Everything else under config/ changes unrelated application behavior
+# (git, tmux, Chromium, ...) and stays opt-in via --all-configs.
+desktop_configs=(autostart btop foot hypr hyprland-preview-share-picker omarchy wireplumber)
+
+theme="tokyo-night"
+session_entry=1
+all_configs=0
+declare -A selected=()
+status_only=1
+
+while (($#)); do
+  case "$1" in
+    --theme)
+      theme="${2:-}"
+      if [[ -z $theme ]]; then
+        echo "Error: --theme needs a theme name" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --all-configs)
+      all_configs=1
+      shift
+      ;;
+    --no-session-entry)
+      session_entry=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    core|link|config|audio|files|connectivity|capture|power|lock|session-entry|status)
+      selected[$1]=1
+      shift
+      ;;
+    all)
+      for stage in "${all_stages[@]}"; do
+        selected[$stage]=1
+      done
+      shift
+      ;;
+    *)
+      echo "Unknown stage or option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if (( ${#selected[@]} == 0 )); then
+  usage >&2
+  exit 1
+fi
+
+if (( session_entry == 0 )); then
+  unset 'selected[session-entry]'
+  if (( ${#selected[@]} == 0 )); then
+    echo "Error: --no-session-entry removed the only selected stage; nothing to do." >&2
+    exit 1
+  fi
+fi
+
+for stage in "${!selected[@]}"; do
+  if [[ $stage != "status" ]]; then
+    status_only=0
+  fi
+done
+
+if (( EUID == 0 )); then
+  echo "Error: run omarchy-dev-setup-desktop as your user, not under sudo." >&2
+  exit 1
+fi
+
+checkout=$(cd -- "$(dirname -- "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)
+manifest="$checkout/install/omarchy-desktop.packages"
+
+if [[ ! -f $manifest ]]; then
+  echo "Error: $manifest not found — is this an Omarchy source checkout?" >&2
+  exit 1
+fi
+
+group_packages() {
+  awk -v group="$1" '
+    /^# group: / { in_group = ($3 == group); next }
+    { sub(/[[:space:]]*#.*$/, "") }
+    in_group && NF { print }
+  ' "$manifest"
+}
+
+stage_selected() {
+  [[ -n ${selected[$1]:-} ]]
+}
+
+# The product uses the four-face basic package to keep fresh installs small.
+# A plain Arch host may already carry the complete JetBrains Mono Nerd Font
+# family, which is a functional superset but conflicts by package name. Keep
+# that host choice instead of asking pacman to remove it during an overlay.
+package_requirement_satisfied() {
+  local package="$1"
+
+  if pacman -Q "$package" >/dev/null 2>&1; then
+    return 0
+  elif [[ $package == "ttf-jetbrains-mono-nerd-basic" ]] && pacman -Q ttf-jetbrains-mono-nerd >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# The path /etc/omarchy.conf resolves to, empty when unreadable. Existence is
+# not enough: a conf pointing at another (or deleted) checkout would make the
+# session load different code than the one being configured here.
+linked_checkout() {
+  [[ -f $omarchy_conf ]] || return 1
+  (
+    OMARCHY_PATH=""
+    . "$omarchy_conf" 2>/dev/null || true
+    printf '%s' "${OMARCHY_PATH:-}"
+  )
+}
+
+require_link() {
+  local linked_path
+  linked_path=$(linked_checkout || true)
+  if [[ -z $linked_path ]]; then
+    echo "Error: $omarchy_conf is missing — run 'omarchy-dev-setup-desktop link' first." >&2
+    exit 1
+  fi
+  if [[ $(realpath -m "$linked_path" 2>/dev/null) != "$checkout" ]]; then
+    echo "Error: $omarchy_conf points at $linked_path, not this checkout — run 'omarchy-dev-setup-desktop link' first." >&2
+    exit 1
+  fi
+}
+
+# --- Read-only status report; never needs sudo and never writes.
+if stage_selected status; then
+  echo "Omarchy desktop setup status (checkout: $checkout)"
+  for product_pkg in omarchy omarchy-dev omarchy-settings omarchy-settings-dev; do
+    if pacman -Q "$product_pkg" >/dev/null 2>&1; then
+      echo "  product:       $product_pkg is installed — this is a packaged Omarchy system"
+    fi
+  done
+  for stage in "${package_stages[@]}"; do
+    mapfile -t stage_pkgs < <(group_packages "$stage")
+    missing=0
+    for package in "${stage_pkgs[@]}"; do
+      package_requirement_satisfied "$package" || (( missing += 1 ))
+    done
+    if (( missing == 0 )); then
+      echo "  $stage: complete (${#stage_pkgs[@]} packages)"
+    else
+      echo "  $stage: $missing of ${#stage_pkgs[@]} packages missing"
+    fi
+  done
+  linked_path=$(linked_checkout || true)
+  if [[ -z $linked_path ]]; then
+    echo "  link: not linked ($omarchy_conf absent)"
+  elif [[ $(realpath -m "$linked_path" 2>/dev/null) == "$checkout" ]]; then
+    echo "  link: linked to this checkout"
+  else
+    echo "  link: points at $linked_path, not this checkout"
+  fi
+  if [[ -f $HOME/.config/uwsm/env.d/10-omarchy ]]; then
+    echo "  link: uwsm environment present"
+  else
+    echo "  link: uwsm environment absent"
+  fi
+  if [[ -f $HOME/.config/hypr/hyprland.lua &&
+    -f $HOME/.local/state/omarchy/done/first-run-user &&
+    -L $HOME/.config/btop/themes/current.theme ]]; then
+    echo "  config: seeded (theme: $(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo none))"
+  else
+    echo "  config: not seeded"
+  fi
+  if [[ -f /etc/pam.d/omarchy-lock-password ]]; then
+    echo "  lock: PAM services present"
+  else
+    echo "  lock: PAM services absent"
+  fi
+  if [[ -f /usr/local/share/wayland-sessions/omarchy.desktop ]]; then
+    echo "  session-entry: present"
+  else
+    echo "  session-entry: absent"
+  fi
+  if (( status_only )); then
+    exit 0
+  fi
+fi
+
+# --- Everything below acts on the system.
+
+if stage_selected config; then
+  # The same normalization and validation omarchy-theme-set applies, so every
+  # bad value fails here, before sudo and before the system has been modified.
+  raw_theme=$theme
+  theme=$(echo "$theme" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+  if [[ -z $theme || $theme == .* || $theme == */* ]]; then
+    echo "Error: invalid theme name: $raw_theme" >&2
+    exit 1
+  fi
+  if [[ ! -d $checkout/themes/$theme ]]; then
+    echo "Error: theme '$theme' does not exist under $checkout/themes" >&2
+    exit 1
+  fi
+fi
+
+# This bootstrap is for systems the Omarchy product did not install. On a
+# packaged install the desktop is already set up; pointing it at a checkout
+# is omarchy-dev-link's job.
+for product_pkg in omarchy omarchy-dev omarchy-settings omarchy-settings-dev; do
+  if pacman -Q "$product_pkg" >/dev/null 2>&1; then
+    echo "Error: the $product_pkg package is installed — this system was set up by the Omarchy product." >&2
+    echo "Use omarchy-dev-link to point an Omarchy install at a checkout instead." >&2
+    exit 1
+  fi
+done
+
+# Validate the staged dependency graph before a package transaction or any
+# other write. In particular, "core config" without link must not upgrade the
+# system and only then discover that config cannot run.
+if stage_selected config && ! stage_selected link; then
+  require_link
+fi
+
+requires_core=0
+for stage in "${!selected[@]}"; do
+  if [[ $stage != "core" && $stage != "status" ]]; then
+    requires_core=1
+    break
+  fi
+done
+if (( requires_core )) && ! stage_selected core; then
+  mapfile -t core_pkgs < <(group_packages core)
+  missing_core_pkgs=()
+  for package in "${core_pkgs[@]}"; do
+    package_requirement_satisfied "$package" || missing_core_pkgs+=("$package")
+  done
+  if (( ${#missing_core_pkgs[@]} > 0 )); then
+    echo "Error: the core stage is incomplete — run 'omarchy-dev-setup-desktop core' first." >&2
+    echo "Missing core packages: ${missing_core_pkgs[*]}" >&2
+    exit 1
+  fi
+fi
+
+export OMARCHY_PATH="$checkout"
+export PATH="$checkout/bin:$PATH"
+
+# --- Packages for every selected package stage, in one transaction.
+packages=()
+for stage in "${package_stages[@]}"; do
+  if stage_selected "$stage"; then
+    mapfile -t stage_pkgs < <(group_packages "$stage")
+    echo "==> $stage"
+    echo "    packages: ${stage_pkgs[*]}"
+    for package in "${stage_pkgs[@]}"; do
+      if [[ $package == "ttf-jetbrains-mono-nerd-basic" ]] && pacman -Q ttf-jetbrains-mono-nerd >/dev/null 2>&1; then
+        echo "    preserving installed package: ttf-jetbrains-mono-nerd (satisfies $package)"
+      else
+        packages+=("$package")
+      fi
+    done
+  fi
+done
+
+if (( ${#packages[@]} > 0 )); then
+  # A full upgrade on a fresh Arch system can outlive sudo's timestamp. Keep
+  # the credential alive so later selected stages do not fail halfway through
+  # the setup or prompt again after the package transaction.
+  source "$checkout/bin/omarchy-sudo-keepalive"
+elif stage_selected link || stage_selected lock || stage_selected session-entry; then
+  sudo -v
+fi
+
+if stage_selected core && ! grep -q '^\[omarchy\]' "$pacman_conf"; then
+  echo "    writes: [omarchy] repo stanza in $pacman_conf (backup kept)"
+  sudo cp -f "$pacman_conf" "$pacman_conf.omarchy-dev-setup-desktop.$(date +%s).bak"
+  printf '\n[omarchy]\nSigLevel = Optional TrustAll\nServer = https://pkgs.omarchy.org/stable/$arch\n' | sudo tee -a "$pacman_conf" >/dev/null
+fi
+
+if stage_selected core; then
+  echo "    verifies: Omarchy package signing key $omarchy_signing_key"
+  if ! sudo pacman-key --list-keys "$omarchy_signing_key" >/dev/null 2>&1; then
+    echo "    writes: pinned Omarchy package signing key in /etc/pacman.d/gnupg"
+    sudo pacman-key --recv-keys "$omarchy_signing_key" --keyserver keys.openpgp.org
+  fi
+  sudo pacman-key --lsign-key "$omarchy_signing_key"
+fi
+
+if (( ${#packages[@]} > 0 )); then
+  echo "Installing selected package stages (full system upgrade)"
+  sudo pacman -Syu --needed "${packages[@]}"
+fi
+
+# --- link: point the system and the uwsm session at this checkout.
+if stage_selected link; then
+  echo "==> link"
+  echo "    writes: $omarchy_conf (omarchy-dev-link --no-sudo-path; the dev sudoers policy is NOT installed)"
+  echo "    writes: ~/.config/uwsm/env.d/10-omarchy (existing file backed up to ~/.config/uwsm/backups/)"
+  omarchy-dev-link "$checkout" --no-reboot --no-sudo-path
+
+  install -d "$HOME/.config/uwsm/env.d"
+  uwsm_env_file="$HOME/.config/uwsm/env.d/10-omarchy"
+  uwsm_env_staged=$(mktemp)
+  # Static content on purpose: the checkout path lives only in /etc/omarchy.conf,
+  # where omarchy-dev-link already wrote it correctly quoted, so no pathname
+  # needs escaping here and the file keeps working if the checkout is re-linked.
+  cat >"$uwsm_env_staged" <<'ENV'
+# Written by omarchy-dev-setup-desktop. uwsm doesn't source /etc/profile.d,
+# so resolve OMARCHY_PATH, then load the packaged session environment
+# (session defaults, user overrides, mise activation) from the checkout.
+[ -r /etc/omarchy.conf ] && . /etc/omarchy.conf
+[ -r "${OMARCHY_PATH:-/usr/share/omarchy}/default/bash/env-bootstrap" ] && . "${OMARCHY_PATH:-/usr/share/omarchy}/default/bash/env-bootstrap"
+[ -r "${OMARCHY_PATH:-/usr/share/omarchy}/default/uwsm/env.d/10-omarchy" ] && . "${OMARCHY_PATH:-/usr/share/omarchy}/default/uwsm/env.d/10-omarchy"
+ENV
+  if [[ -f $uwsm_env_file ]] && ! cmp -s "$uwsm_env_staged" "$uwsm_env_file"; then
+    # uwsm sources every file in env.d, so a backup left in that directory
+    # would be executed right after the file that replaced it. Keep backups
+    # outside the sourced directory.
+    uwsm_backup_dir="$HOME/.config/uwsm/backups"
+    uwsm_env_backup="$uwsm_backup_dir/10-omarchy.bak.$(date +%s)"
+    install -d "$uwsm_backup_dir"
+    cp -f "$uwsm_env_file" "$uwsm_env_backup"
+    echo "Backed up existing $uwsm_env_file to $uwsm_env_backup"
+  fi
+  install -m 0644 "$uwsm_env_staged" "$uwsm_env_file"
+  rm -f "$uwsm_env_staged"
+fi
+
+# --- config: user-level desktop configuration. Requires link, because the
+# seeded configs and the session resolve everything through /etc/omarchy.conf.
+if stage_selected config; then
+  echo "==> config"
+  require_link
+  echo "    writes: ~/.local/share/fonts/omarchy.ttf, ~/.config desktop configs (backups kept),"
+  echo "    writes: theme state under ~/.local/state/omarchy/, btop theme link, first-run marker"
+
+  install -Dm644 "$checkout/default/fonts/omarchy/omarchy.ttf" "$HOME/.local/share/fonts/omarchy.ttf"
+  fc-cache -f >/dev/null
+
+  if (( all_configs )); then
+    echo "Seeding every shipped config from $checkout/config (existing files are backed up)"
+    seed_roots=("$checkout/config")
+  else
+    echo "Seeding desktop configs from $checkout/config (existing files are backed up)"
+    seed_roots=()
+    for config_dir in "${desktop_configs[@]}"; do
+      if [[ -e $checkout/config/$config_dir ]]; then
+        seed_roots+=("$checkout/config/$config_dir")
+      fi
+    done
+  fi
+  while IFS= read -r -d '' config_file; do
+    omarchy-refresh-config "${config_file#"$checkout"/config/}"
+  done < <(find "${seed_roots[@]}" -type f -print0)
+
+  echo "Generating the initial theme: $theme"
+  OMARCHY_THEME_HEADLESS=1 omarchy-theme-set "$theme"
+
+  # Headless generation avoids restarting applications while the checkout is
+  # being seeded, but it also skips the GNOME/GTK synchronization that normal
+  # first-run provisioning performs. Apply that narrow user-session hook so
+  # GTK and libadwaita applications match the selected light/dark mode and use
+  # the product's icon theme before first-run is marked complete below.
+  omarchy-theme-set-gnome
+
+  mkdir -p "$HOME/.config/btop/themes"
+  ln -snf "$HOME/.local/state/omarchy/current/theme/btop.theme" "$HOME/.config/btop/themes/current.theme"
+
+  # The default session autostart runs omarchy-provision-first-run, which
+  # enables user units and finalization the packaged product ships. None of
+  # that exists on a checkout-only install; mark it complete so first login
+  # doesn't try.
+  omarchy-done mark first-run-user
+
+  cat <<DONE
+
+Desktop configured from: $checkout
+
+Test the session from a TTY with:
+  uwsm start -g -1 -e -D Hyprland hyprland.desktop
+DONE
+fi
+
+# --- files: register the default directory handler once the file manager exists.
+if stage_selected files; then
+  if omarchy-cmd-present xdg-mime; then
+    echo "==> files: registering nautilus as the inode/directory handler"
+    xdg-mime default org.gnome.Nautilus.desktop inode/directory
+  else
+    echo "==> files: xdg-mime not available; skip registering the default directory handler" >&2
+  fi
+fi
+
+# --- lock: explicit opt-in PAM services for the shell's lock screen.
+if stage_selected lock; then
+  echo "==> lock"
+  echo "    writes: /etc/pam.d/omarchy-lock-* (new PAM services; nothing existing is modified)"
+  omarchy-apply-lock
+fi
+
+# --- session-entry: explicit opt-in greeter session file.
+if stage_selected session-entry; then
+  echo "==> session-entry"
+  echo "    writes: /usr/local/share/wayland-sessions/omarchy.desktop"
+  sudo install -Dm644 "$checkout/default/wayland-sessions/omarchy.desktop" /usr/local/share/wayland-sessions/omarchy.desktop
+fi
+
+cat <<'DONE'
+
+Left unconfigured, deliberately: bootloader, initramfs, Secure Boot,
+encryption, storage, Snapper, display managers, system services, and the
+omarchy/omarchy-settings packages. The optional user units a packaged
+install enables (bluetooth pairing agent, sleep lock, ...) were not set up
+either; see install/user/first-run/enable-user-units.sh for that list.
+Run "omarchy-dev-setup-desktop status" to see what is and isn't in place.
+DONE

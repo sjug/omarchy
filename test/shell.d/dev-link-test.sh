@@ -30,6 +30,9 @@ case "$1" in
     # The staged file is the second-to-last argument.
     cp "${@: -2:1}" "$OMARCHY_DEV_LINK_TEST_SUDOERS"
     ;;
+  rm)
+    rm -f "$OMARCHY_DEV_LINK_TEST_SUDOERS"
+    ;;
 esac
 SH
 chmod +x "$stub_bin/sudo"
@@ -111,6 +114,35 @@ run_link "$quoted_checkout" --no-reboot >/dev/null
 visudo -cf "$sudoers_file" >/dev/null ||
   fail "dev link escapes a checkout path for sudoers" "$(<"$sudoers_file")"
 pass "dev link escapes a checkout path for sudoers"
+
+# --no-sudo-path is the production posture: link the checkout without putting
+# its user-writable bin/ on root's secure_path.
+: >"$log_file"
+echo 'stale development sudoers policy' >"$sudoers_file"
+rm -f "$conf_file"
+run_link "$checkout" --no-reboot --no-sudo-path >"$test_tmp/link-nosudo.out"
+
+[[ $(<"$conf_file") == "export OMARCHY_PATH=\"$checkout\"" ]] ||
+  fail "dev link --no-sudo-path still writes omarchy.conf" "$(<"$conf_file")"
+[[ ! -e $sudoers_file ]] ||
+  fail "dev link --no-sudo-path removes a stale sudoers drop-in" "$(<"$sudoers_file")"
+if grep -q $'\tinstall\t' "$log_file"; then
+  fail "dev link --no-sudo-path sudo-installs nothing" "$(cat "$log_file")"
+fi
+grep -Eq $'^sudo\trm\t-f\t/etc/sudoers\\.d/omarchy-dev-path$' "$log_file" ||
+  fail "dev link --no-sudo-path removes the owned sudoers drop-in" "$(<"$log_file")"
+if grep -F "sudo now resolves" "$test_tmp/link-nosudo.out" >/dev/null; then
+  fail "dev link --no-sudo-path does not claim a sudo change" "$(cat "$test_tmp/link-nosudo.out")"
+fi
+grep -F "sudo secure_path does not include the checkout" "$test_tmp/link-nosudo.out" >/dev/null ||
+  fail "dev link --no-sudo-path reports the production posture" "$(<"$test_tmp/link-nosudo.out")"
+pass "dev link --no-sudo-path links without or removes the sudo secure_path policy"
+
+: >"$log_file"
+if run_link "$checkout" --bogus-flag >/dev/null 2>&1; then
+  fail "dev link rejects an unknown flag"
+fi
+pass "dev link rejects an unknown flag"
 
 : >"$log_file"
 if run_link "$test_tmp/missing" --no-reboot >/dev/null 2>"$test_tmp/missing.err"; then

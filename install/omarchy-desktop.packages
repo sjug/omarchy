@@ -1,0 +1,93 @@
+# Desktop-only package set installed by omarchy-dev-setup-desktop for
+# checkout-backed installs on Arch systems Omarchy did not install.
+#
+# The desktop packages are a strict subset of the product package set
+# (omarchy-base.packages plus omarchy-other.packages), with omarchy-keyring as
+# the one bootstrap addition needed to verify packages from the Omarchy repo.
+# The list deliberately excludes every boot, storage, login, and system
+# integration package (limine, snapper, plymouth, sddm, docker, ufw, ...).
+#
+# "# group: <name>" markers split the set into the stages
+# omarchy-dev-setup-desktop installs independently.
+# test/shell.d/desktop-manifest-test.sh enforces all of these properties.
+
+# group: core
+# Compositor, session manager, portals, the Omarchy shell, the shipped
+# terminal, fonts, and the tools Omarchy's desktop scripts invoke directly
+# (perl: the clipboard service and menu helpers call it). omarchy-keyring pins
+# the signer for the few desktop packages supplied by the Omarchy repo.
+btop
+fontconfig
+foot
+gnome-themes-extra
+gum
+hyprland
+hyprland-guiutils
+hyprland-preview-share-picker
+hyprsunset
+imagemagick
+inotify-tools
+jq
+noto-fonts
+noto-fonts-cjk
+noto-fonts-emoji
+omacalc
+omarchy-keyring
+perl
+qt6-imageformats
+quickshell
+socat
+ttf-ia-writer
+ttf-jetbrains-mono-nerd-basic
+uwsm
+wl-clipboard
+woff2-font-awesome
+wtype
+xdg-desktop-portal-gtk
+xdg-desktop-portal-hyprland
+xdg-terminal-exec
+yaru-icon-theme
+
+# group: audio
+# wireplumber pulls PipeWire core; the pulse/alsa bridges are what most apps
+# and omarchy's pactl-based volume controls actually talk to.
+alsa-utils
+pamixer
+pipewire-alsa
+pipewire-pulse
+wireplumber
+
+# group: files
+# File manager (SUPER+SHIFT+F) with previews, phone/network mounts, and
+# removable-media automount (the default session autostarts udiskie).
+gvfs-mtp
+gvfs-nfs
+gvfs-smb
+nautilus
+sushi
+udiskie
+
+# group: connectivity
+# Daemons behind the shell's network and bluetooth panels; enabling them
+# stays the host's call.
+bluez
+bluez-utils
+networkmanager
+
+# group: capture
+# Screenshots, recording, color picking, OCR, and QR tools the capture menu
+# and default bindings invoke.
+gpu-screen-recorder
+grim
+hyprpicker
+qrencode
+slurp
+tensaku
+tesseract
+tesseract-data-eng
+zbar
+
+# group: power
+# Brightness keys and the power-profile switching the session initializes.
+brightnessctl
+power-profiles-daemon

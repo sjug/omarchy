@@ -2,7 +2,7 @@
 
 # omarchy:summary=Point Omarchy at a local checkout after reboot
 # omarchy:group=dev
-# omarchy:args=<path-to-checkout> [--no-reboot]
+# omarchy:args=<path-to-checkout> [--no-reboot] [--no-sudo-path]
 # omarchy:examples=omarchy dev link ~/omarchy
 
 set -euo pipefail
@@ -23,9 +23,9 @@ prompt_reboot=1
 sudoers_file="/etc/sudoers.d/omarchy-dev-path"
 system_secure_path="/usr/local/sbin:/usr/local/bin:/usr/bin"
 
-if (( $# < 1 || $# > 2 )) || [[ $1 == "-h" || $1 == "--help" ]]; then
+if (( $# < 1 || $# > 3 )) || [[ $1 == "-h" || $1 == "--help" ]]; then
   cat <<USAGE
-Usage: omarchy dev link <path-to-checkout> [--no-reboot]
+Usage: omarchy dev link <path-to-checkout> [--no-reboot] [--no-sudo-path]
 
 Writes /etc/omarchy.conf so OMARCHY_PATH resolves to <path-to-checkout>
 after reboot. This intentionally does not rewrite the running Hyprland,
@@ -42,18 +42,31 @@ from the checkout instead of the packaged copies. That part takes effect
 immediately, no reboot needed.
 
 Use --no-reboot when another command will handle the reboot prompt.
+
+Use --no-sudo-path to remove or omit the sudoers drop-in: the checkout's bin/
+is user-writable, so putting it on root's secure_path is a trust grant fit for
+a development machine, not a production desktop. omarchy-dev-setup-desktop
+links with this flag; omarchy commands still escalate internally, only a
+literal \`sudo omarchy-<cmd>\` stops resolving from the checkout.
 USAGE
   exit 0
 fi
 
-if (( $# == 2 )); then
-  if [[ $2 == "--no-reboot" ]]; then
+target_arg=$1
+shift
+install_sudo_path=1
+while (($#)); do
+  if [[ $1 == "--no-reboot" ]]; then
     prompt_reboot=0
+    shift
+  elif [[ $1 == "--no-sudo-path" ]]; then
+    install_sudo_path=0
+    shift
   else
-    echo "Usage: omarchy dev link <path-to-checkout> [--no-reboot]" >&2
+    echo "Usage: omarchy dev link <path-to-checkout> [--no-reboot] [--no-sudo-path]" >&2
     exit 1
   fi
-fi
+done
 
 omarchy_conf_quote() {
   local value="$1"
@@ -74,8 +87,8 @@ sudoers_quote() {
   printf '"%s"' "$value"
 }
 
-target=$(realpath -e "$1" 2>/dev/null) || {
-  echo "Error: path does not exist: $1" >&2
+target=$(realpath -e "$target_arg" 2>/dev/null) || {
+  echo "Error: path does not exist: $target_arg" >&2
   exit 1
 }
 
@@ -85,21 +98,23 @@ for required in bin default shell; do
   fi
 done
 
-# Staged and parsed before anything is installed: a sudoers file sudo refuses to
-# read takes every rule after it down with it, including the %wheel grant, and
-# the password prompt needed to undo that is on the other side of the breakage.
-staged_sudoers=$(mktemp)
-trap 'rm -f "$staged_sudoers"' EXIT
+if (( install_sudo_path )); then
+  # Staged and parsed before anything is installed: a sudoers file sudo refuses to
+  # read takes every rule after it down with it, including the %wheel grant, and
+  # the password prompt needed to undo that is on the other side of the breakage.
+  staged_sudoers=$(mktemp)
+  trap 'rm -f "$staged_sudoers"' EXIT
 
-{
-  printf 'Defaults secure_path='
-  sudoers_quote "$target/bin:$system_secure_path"
-  printf '\n'
-} >"$staged_sudoers"
+  {
+    printf 'Defaults secure_path='
+    sudoers_quote "$target/bin:$system_secure_path"
+    printf '\n'
+  } >"$staged_sudoers"
 
-if ! visudo -cf "$staged_sudoers" >/dev/null; then
-  echo "Error: refusing to install an invalid $sudoers_file for $target" >&2
-  exit 1
+  if ! visudo -cf "$staged_sudoers" >/dev/null; then
+    echo "Error: refusing to install an invalid $sudoers_file for $target" >&2
+    exit 1
+  fi
 fi
 
 {
@@ -108,10 +123,14 @@ fi
   printf '\n'
 } | sudo tee /etc/omarchy.conf >/dev/null
 
-sudo install -Dm440 -o root -g root "$staged_sudoers" "$sudoers_file"
-
 echo "Pointed Omarchy at $target"
-echo "sudo now resolves omarchy-* from $target/bin"
+if (( install_sudo_path )); then
+  sudo install -Dm440 -o root -g root "$staged_sudoers" "$sudoers_file"
+  echo "sudo now resolves omarchy-* from $target/bin"
+else
+  sudo rm -f "$sudoers_file"
+  echo "sudo secure_path does not include the checkout"
+fi
 echo
 
 if (( prompt_reboot )) && gum confirm "Reboot now to activate?"; then
