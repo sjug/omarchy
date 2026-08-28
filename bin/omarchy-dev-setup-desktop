@@ -298,10 +298,6 @@ display_manager_configured() {
   diff -qr "$theme_source" "$theme_target" >/dev/null 2>&1 || return 1
   cmp -s <(printf '[Users]\nRememberLastUser=true\nRememberLastSession=true\n') \
     "$(system_path /etc/sddm.conf.d/99-omarchy-login.conf)" || return 1
-  # SDDM owns this runtime state and rewrites its contents on login. Require
-  # only a regular file so remembered-user/session updates are not mistaken
-  # for configuration drift.
-  [[ -f $(system_path /var/lib/sddm/state.conf) ]] || return 1
 }
 
 preflight_display_manager() {

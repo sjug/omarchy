@@ -508,7 +508,11 @@ transaction_dir="$test_home/.local/state/omarchy/dev-setup-desktop/display-manag
   fail "display-manager keeps rollback state private to the user"
 printf '[Last]\nSession=/usr/local/share/wayland-sessions/omarchy.desktop\nUser=remembered-user\n' \
   >"$system_root/var/lib/sddm/state.conf"
+# The real SDDM state directory is private to sddm. Status must treat it as
+# runtime state and remain accurate without traversing it as the desktop user.
+chmod 000 "$system_root/var/lib/sddm"
 status_output=$(OMARCHY_TEST_INSTALLED_PACKAGES="$core_packages sddm qt6-wayland" run_setup status)
+chmod 0755 "$system_root/var/lib/sddm"
 grep -q 'display-manager: configured and enabled' <<<"$status_output" ||
   fail "status recognizes a complete display-manager setup" "$status_output"
 grep -q "display-manager-rollback: available (transaction $transaction_id)" <<<"$status_output" ||
