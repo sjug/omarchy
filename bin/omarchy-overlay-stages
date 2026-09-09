@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# omarchy:summary=Print the stages recorded for this desktop overlay
+# omarchy:hidden=true
+
+set -euo pipefail
+
+installation_conf="${OMARCHY_INSTALLATION_CONF_PATH:-/etc/omarchy/installation.conf}"
+known_stages=(core link config audio files connectivity capture power lock session-entry display-manager)
+
+descriptor_value() {
+  local key="$1"
+  local -a values=()
+
+  mapfile -t values < <(sed -n -E "s/^[[:space:]]*${key}=([^[:space:]#]+)[[:space:]]*(#.*)?$/\\1/p" "$installation_conf")
+  (( ${#values[@]} == 1 )) || return 1
+  printf '%s\n' "${values[0]}"
+}
+
+if [[ $(omarchy-installation-type --classify-only) != "desktop_overlay" ]]; then
+  echo "Error: desktop-overlay stages are only defined for a registered desktop overlay." >&2
+  exit 1
+fi
+
+if ! owner=$(descriptor_value OMARCHY_DESKTOP_OWNER); then
+  echo "Error: $installation_conf must contain exactly one valid OMARCHY_DESKTOP_OWNER assignment." >&2
+  exit 1
+fi
+if [[ $owner != "$(id -un)" ]]; then
+  echo "Error: desktop overlay belongs to '$owner'; run as that user (current user: '$(id -un)')." >&2
+  exit 1
+fi
+
+if ! stage_csv=$(descriptor_value OMARCHY_DESKTOP_STAGES); then
+  echo "Error: $installation_conf must contain exactly one valid OMARCHY_DESKTOP_STAGES assignment." >&2
+  exit 1
+fi
+
+IFS=, read -r -a recorded_stages <<<"$stage_csv"
+declare -A recorded=()
+for stage in "${recorded_stages[@]}"; do
+  [[ -n $stage ]] || {
+    echo "Error: $installation_conf contains an empty desktop-overlay stage." >&2
+    exit 1
+  }
+  if [[ -n ${recorded[$stage]:-} ]]; then
+    echo "Error: $installation_conf records desktop-overlay stage '$stage' more than once." >&2
+    exit 1
+  fi
+  recorded[$stage]=1
+done
+
+for stage in "${!recorded[@]}"; do
+  known=0
+  for known_stage in "${known_stages[@]}"; do
+    if [[ $stage == "$known_stage" ]]; then
+      known=1
+      break
+    fi
+  done
+  if (( ! known )); then
+    echo "Error: $installation_conf records unknown desktop-overlay stage '$stage'." >&2
+    exit 1
+  fi
+done
+
+if [[ -z ${recorded[core]:-} ]]; then
+  echo "Error: $installation_conf must record the core desktop-overlay stage." >&2
+  exit 1
+fi
+if [[ -n ${recorded[config]:-} && -z ${recorded[link]:-} ]]; then
+  echo "Error: $installation_conf records config without its required link stage." >&2
+  exit 1
+fi
+if [[ -n ${recorded[display-manager]:-} ]]; then
+  if [[ -z ${recorded[link]:-} || -z ${recorded[config]:-} || -z ${recorded[session-entry]:-} ]]; then
+    echo "Error: $installation_conf records display-manager without link, config, and session-entry." >&2
+    exit 1
+  fi
+fi
+
+for stage in "${known_stages[@]}"; do
+  [[ -z ${recorded[$stage]:-} ]] || echo "$stage"
+done

@@ -339,7 +339,9 @@
 
   // Update
   "update.omarchy": {"icon":"","iconFont":"omarchy","label":"Omarchy","action":"omarchy-launch-floating-terminal-with-presentation omarchy-update"},
-  "update.channel": {"icon":"󰔫","label":"Channel"},
+  // Keep 2>/dev/null inside this substitution: MenuModel caches the bare reader
+  // with its exit status discarded. This guard must preserve failure status.
+  "update.channel": {"icon":"󰔫","label":"Channel","when":"channel=$(omarchy-channel-current 2>/dev/null) && [[ $channel != \"desktop-overlay\" ]]"},
   "update.config": {"icon":"","label":"Config","title":"Reset to default"},
   "update.themes": {"icon":"󰸌","label":"Extra Themes","when":"omarchy-theme-extras","action":"omarchy-launch-floating-terminal-with-presentation omarchy-theme-update"},
   "update.process": {"icon":"","label":"Process","title":"Restart"},

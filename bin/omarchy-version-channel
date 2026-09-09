@@ -2,6 +2,17 @@
 
 # omarchy:summary=Print the active Omarchy mirror and package channel
 
+installation_type=$(omarchy-installation-type --classify-only)
+if [[ $installation_type == "desktop_overlay" ]]; then
+  echo desktop-overlay
+  exit 0
+elif [[ $installation_type == "checkout_unregistered" ]]; then
+  echo dev
+  exit 0
+elif [[ $installation_type != "product" ]]; then
+  exit 1
+fi
+
 if grep -q "https://stable-mirror.omarchy.org/" /etc/pacman.d/mirrorlist; then
   mirror="stable"
 elif grep -q "https://rc-mirror.omarchy.org/" /etc/pacman.d/mirrorlist; then
@@ -20,8 +31,8 @@ else
   pkgs="unknown"
 fi
 
-if [[ $mirror == $pkgs ]]; then
-  echo $mirror
+if [[ $mirror == "$pkgs" ]]; then
+  echo "$mirror"
 else
   echo "$mirror / $pkgs"
 fi

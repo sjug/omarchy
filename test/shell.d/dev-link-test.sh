@@ -11,7 +11,18 @@ stub_bin="$test_tmp/bin"
 log_file="$test_tmp/dev-link.log"
 conf_file="$test_tmp/omarchy.conf"
 sudoers_file="$test_tmp/omarchy-dev-path"
+descriptor="$test_tmp/installation.conf"
 mkdir -p "$stub_bin" "$test_tmp/home"
+
+cat >"$stub_bin/pacman" <<'SH'
+#!/bin/bash
+if [[ ${OMARCHY_TEST_PRODUCT_INSTALLED:-1} == "1" && $1 == "-Qq" && $2 == "omarchy" ]]; then
+  echo omarchy
+else
+  exit 1
+fi
+SH
+chmod +x "$stub_bin/pacman"
 
 cat >"$stub_bin/sudo" <<'SH'
 #!/bin/bash
@@ -57,11 +68,14 @@ chmod +x "$stub_bin/omarchy-system-reboot"
 
 run_link() {
   HOME="$test_tmp/home" \
+    OMARCHY_PATH="${OMARCHY_TEST_RUNTIME_PATH:-$ROOT}" \
+    OMARCHY_INSTALLATION_CONF_PATH="$descriptor" \
+    OMARCHY_RUNTIME_CONF_PATH="$conf_file" \
     OMARCHY_DEV_LINK_TEST_LOG="$log_file" \
     OMARCHY_DEV_LINK_TEST_CONF="$conf_file" \
     OMARCHY_DEV_LINK_TEST_SUDOERS="$sudoers_file" \
     PATH="$stub_bin:$PATH" \
-    "$ROOT/bin/omarchy-dev-link" "$@"
+    "${OMARCHY_DEV_LINK_COMMAND:-$ROOT/bin/omarchy-dev-link}" "$@"
 }
 
 make_checkout() {
@@ -72,6 +86,28 @@ make_checkout() {
 }
 
 checkout=$(make_checkout checkout)
+
+# Product packages install commands in /usr/bin while their shared source tree
+# lives under /usr/share/omarchy. The command must resolve its helper through
+# OMARCHY_PATH rather than relative to the executable.
+packaged_bin="$test_tmp/usr/bin"
+packaged_root="$test_tmp/usr/share/omarchy"
+mkdir -p "$packaged_bin" "$packaged_root/install/helpers"
+cp "$ROOT/bin/omarchy-dev-link" "$packaged_bin/"
+cp "$ROOT/install/helpers/runtime-link.sh" "$packaged_root/install/helpers/"
+cat >"$packaged_bin/omarchy-installation-type" <<'SH'
+#!/bin/bash
+echo product
+SH
+chmod +x "$packaged_bin/omarchy-installation-type"
+
+: >"$log_file"
+: >"$sudoers_file"
+OMARCHY_DEV_LINK_COMMAND="$packaged_bin/omarchy-dev-link" \
+  OMARCHY_TEST_RUNTIME_PATH="$packaged_root" \
+  run_link "$checkout" --no-reboot >/dev/null
+[[ -s $conf_file ]] || fail "packaged dev link cannot load its shared runtime-link helper"
+pass "packaged dev link resolves its helper through OMARCHY_PATH"
 
 : >"$log_file"
 : >"$sudoers_file"
@@ -154,3 +190,23 @@ if grep -q 'sudo' "$log_file"; then
   fail "dev link touches nothing when the path does not exist" "$(cat "$log_file")"
 fi
 pass "dev link rejects a path that does not exist"
+
+printf 'OMARCHY_INSTALLATION=desktop_overlay\nOMARCHY_DESKTOP_STAGES=core,link\n' >"$descriptor"
+: >"$log_file"
+if OMARCHY_TEST_PRODUCT_INSTALLED=0 run_link "$checkout" --no-reboot >"$test_tmp/overlay.out" 2>"$test_tmp/overlay.err"; then
+  fail "dev link accepts a registered desktop overlay"
+fi
+grep -q "omarchy overlay setup link" "$test_tmp/overlay.err" ||
+  fail "dev link does not name the overlay-safe link repair" "$(<"$test_tmp/overlay.err")"
+[[ ! -s $log_file ]] || fail "refused overlay dev link changes system state" "$(<"$log_file")"
+pass "dev link refuses registered overlays without blocking product dev links"
+
+printf 'not a valid installation descriptor\n' >"$descriptor"
+: >"$log_file"
+if OMARCHY_TEST_PRODUCT_INSTALLED=0 run_link "$checkout" --no-reboot >"$test_tmp/malformed.out" 2>"$test_tmp/malformed.err"; then
+  fail "dev link accepts a malformed installation descriptor"
+fi
+grep -q 'must contain exactly one valid OMARCHY_INSTALLATION' "$test_tmp/malformed.err" ||
+  fail "dev link hides the descriptor error that caused its refusal" "$(<"$test_tmp/malformed.err")"
+[[ ! -s $log_file ]] || fail "malformed-descriptor dev link changes system state" "$(<"$log_file")"
+pass "dev link fails closed when installation classification fails"

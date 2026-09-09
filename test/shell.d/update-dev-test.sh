@@ -46,12 +46,30 @@ esac
 SH
 chmod +x "$stub_bin/git"
 
+cat >"$stub_bin/omarchy-installation-type" <<'SH'
+#!/bin/bash
+if [[ ${TEST_REQUIRE_CLASSIFY_ONLY:-0} == "1" && ${1:-} != "--classify-only" ]]; then
+  exit 72
+fi
+echo "${TEST_INSTALLATION_TYPE:-product}"
+SH
+chmod +x "$stub_bin/omarchy-installation-type"
+
 run_dev_update() {
   OMARCHY_PATH="$1" \
     TEST_GIT_LOG="$git_log" \
     PATH="$stub_bin:$PATH" \
     "$ROOT/bin/omarchy-update-dev"
 }
+
+: >"$git_log"
+if TEST_INSTALLATION_TYPE=desktop_overlay TEST_REQUIRE_CLASSIFY_ONLY=1 run_dev_update "$checkout" >"$test_tmp/overlay.out" 2>"$test_tmp/overlay.err"; then
+  fail "desktop overlay can enter the product checkout updater"
+fi
+grep -q "desktop overlays update their checkout through 'omarchy update'" "$test_tmp/overlay.err" ||
+  fail "desktop overlay gets its supported update command" "$(<"$test_tmp/overlay.err")"
+[[ ! -s $git_log ]] || fail "desktop overlay refusal happens before Git" "$(<"$git_log")"
+pass "product checkout updater refuses desktop overlays"
 
 : >"$git_log"
 run_dev_update /usr/share/omarchy

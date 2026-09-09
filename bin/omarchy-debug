@@ -34,10 +34,12 @@ else
   DMESG_OUTPUT="$(sudo dmesg)"
 fi
 
+# The package list is intentionally expanded into individual expac arguments.
+# shellcheck disable=SC2046
 cat > "$LOG_FILE" <<EOF
 Date: $(date)
 Hostname: $(hostname)
-Omarchy Package: $(pacman -Q omarchy-dev 2>/dev/null || pacman -Q omarchy 2>/dev/null || echo "unknown")
+Omarchy: $(omarchy-version 2>/dev/null || pacman -Q omarchy-dev 2>/dev/null || pacman -Q omarchy 2>/dev/null || echo "unknown")
 
 =========================================
 SYSTEM INFORMATION

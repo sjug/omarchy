@@ -14,6 +14,8 @@ mkdir -p "$stub_bin"
 # was handed. One of them can be told to fail.
 steps=(
   omarchy-update-lock
+  omarchy-installation-type
+  omarchy-update-overlay
   omarchy-update-requires-free-space
   omarchy-update-confirm
   omarchy-update-pkg-prune
@@ -41,12 +43,21 @@ STUB
   chmod +x "$stub_bin/$step"
 done
 
+cat >"$stub_bin/omarchy-installation-type" <<'STUB'
+#!/bin/bash
+printf '%s unattended=%s\n' "${0##*/}" "${OMARCHY_UPDATE_UNATTENDED:-}" >>"$STEP_LOG"
+[[ ${FAILING_STEP:-} != "${0##*/}" ]] || exit 1
+echo "${TEST_INSTALLATION_TYPE:-product}"
+STUB
+chmod +x "$stub_bin/omarchy-installation-type"
+
 # OMARCHY_UPDATE_LOGGED stands in for the script(1) wrapper the update re-execs
 # itself under; the stubbed lock reports itself already held.
 run_update() {
   : >"$test_tmp/steps"
   STEP_LOG="$test_tmp/steps" \
     FAILING_STEP="${FAILING_STEP:-}" \
+    TEST_INSTALLATION_TYPE="${TEST_INSTALLATION_TYPE:-product}" \
     OMARCHY_UPDATE_LOGGED=1 \
     PATH="$stub_bin:$PATH" \
     bash "$ROOT/bin/omarchy-update" "$@" >"$test_tmp/out" 2>"$test_tmp/err"
@@ -61,6 +72,7 @@ steps_run() {
 expected_steps() {
   printf '%s\n' \
     omarchy-update-lock \
+    omarchy-installation-type \
     omarchy-update-requires-free-space \
     ${1:+omarchy-update-confirm} \
     omarchy-update-pkg-prune \
@@ -94,6 +106,11 @@ grep -q '^omarchy-update-system-pkgs unattended=$' "$test_tmp/steps" ||
   fail "an update a person confirmed is treated as unattended"
 pass "-y is what marks an update unattended, not the update itself"
 
+TEST_INSTALLATION_TYPE=desktop_overlay run_update -y || fail "a desktop overlay is not routed to its updater"
+[[ $(steps_run) == $'omarchy-update-lock\nomarchy-installation-type\nomarchy-update-overlay' ]] ||
+  fail "desktop-overlay routing does not stop before the product sequence" "$(steps_run)"
+pass "top-level update dispatches desktop overlays immediately after taking the shared lock"
+
 # Migrations ship with the packages the upgrade installs and are written against
 # them. Running them against what is still on disk is the failure this ordering
 # exists to prevent, so the update stops where the packages did.
@@ -106,3 +123,11 @@ for step in omarchy-migrate omarchy-hook omarchy-update-aur-pkgs omarchy-update-
   fi
 done
 pass "a blocked package upgrade stops the update before it migrates"
+
+FAILING_STEP=omarchy-update-status run_update -y ||
+  fail "an indicator refresh failure turns a completed product package update into a failed update"
+grep -q '^omarchy-update-restart ' "$test_tmp/steps" ||
+  fail "an indicator refresh failure skips product restart checks" "$(<"$test_tmp/steps")"
+grep -q 'continuing to restart checks' "$test_tmp/err" ||
+  fail "a product indicator failure is not reported as a non-blocking warning" "$(<"$test_tmp/err")"
+pass "product update preserves completed work and restart checks when indicator refresh fails"

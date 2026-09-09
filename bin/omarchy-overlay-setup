@@ -1,0 +1,1543 @@
+#!/bin/bash
+
+# omarchy:summary=Install or reconcile the Omarchy desktop overlay in stages
+# omarchy:args=[packages|artifacts|register] <stage>... [--check] [--repair] [--theme <name>] [--all-configs] [--no-session-entry]
+# omarchy:examples=omarchy overlay setup core | omarchy overlay setup link config | omarchy overlay setup packages core audio | omarchy overlay setup all
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: omarchy-overlay-setup [packages|artifacts|register] <stage>... [--check] [--repair] [--theme <name>] [--all-configs] [--no-session-entry]
+
+Sets up the Omarchy desktop (Hyprland + Quickshell + themes) from this source
+checkout on an Arch system that Omarchy did not install, one stage at a time.
+It refuses to run where the omarchy product packages are installed. The host
+keeps ownership of boot, storage, disk security, and networking:
+
+  - configures nothing in the host's boot, storage, or disk-security stack:
+    bootloader, initramfs generation, Secure Boot, disk encryption,
+    partitioning, and Snapper are left exactly as they are
+  - installs no display manager unless the display-manager stage is named
+    explicitly; that stage is excluded from "all" and records a rollback
+  - never installs the omarchy or omarchy-settings packages
+  - never enables system services except sddm.service in the explicit
+    display-manager stage
+
+Setup stages print their package and file changes before acting and are
+idempotent. The rollback stage consumes its active transaction when complete:
+
+  core           Compositor, uwsm, Quickshell, portals, foot, fonts, and the
+                 runtime tools Omarchy's desktop scripts invoke. Adds the
+                 [omarchy] pacman repo if absent (timestamped .bak kept), pins
+                 its signing key, and installs omarchy-keyring. The pinned key
+                 is added to /etc/pacman.d/gnupg when absent.
+  link           Point the system at this checkout: /etc/omarchy.conf via
+                 the shared runtime-link writer without a sudo path, plus
+                 ~/.config/uwsm/env.d/10-omarchy (existing file backed up to
+                 ~/.config/uwsm/backups/). The development sudoers policy
+                 that puts the checkout on root's secure_path is deliberately
+                 NOT installed: omarchy commands escalate internally, and a
+                 user-writable bin/ on secure_path is a development trust
+                 grant, not a production one. Developers who want
+                 "sudo omarchy-*" resolution use a product development link;
+                 dev link and unlink are refused after overlay registration.
+  config         Seed desktop configs into ~/.config (backups kept), install
+                 the icon font and default branding (existing branding is
+                 preserved), generate the initial theme, and mark
+                 package-dependent first-run provisioning complete.
+                 Requires link.
+  audio          PipeWire pulse/alsa bridges, WirePlumber, volume controls.
+  files          File manager, previews, mounts, automount; registers the
+                 default directory handler when xdg-mime is available.
+  connectivity   Network and bluetooth daemons for the shell's panels
+                 (installed only, never enabled).
+  capture        Screenshots, recording, color picker, OCR, QR tools.
+  power          Brightness and power-profile controls.
+  lock           Lock-screen PAM services (/etc/pam.d/omarchy-lock-*) via
+                 omarchy-apply-lock. Explicit opt-in.
+  session-entry  Greeter session file under
+                 /usr/local/share/wayland-sessions/. Explicit opt-in.
+  display-manager
+                 Install and configure SDDM with Omarchy's Wayland greeter,
+                 authenticated login, and session entry; enable it for the
+                 next boot without starting it now. Explicit opt-in and never
+                 included in "all". Refuses to replace another display
+                 manager. Records the prior files, enabled state, and default
+                 target before changing them. The minimal greeter logs in
+                 SDDM's remembered last user and intentionally has no user
+                 chooser, matching Omarchy's single-user workstation model.
+  display-manager-rollback
+                 Disable SDDM when this setup enabled it and restore the exact
+                 files and default target recorded by display-manager. Leaves
+                 installed packages in place to avoid removing dependencies
+                 another host package may now use.
+  status         Read-only report of what each stage has and hasn't done.
+  all            Every desktop stage above in dependency order, through the
+                 session entry, but never display-manager (the one-shot setup
+                 for disposable machines and CI).
+
+Package stages run one combined "pacman -Syu --needed" for everything
+selected, so the host's own pacman hooks run exactly as a plain -Syu would —
+a kernel update, for example, rebuilds the host's initramfs with the host's
+configuration. Registering the overlay makes this same full system upgrade part
+of `omarchy update`; Arch does not support partial system upgrades.
+
+Dependency order: core -> link -> config. Display-manager needs all three;
+every other setup stage only needs core. Rollback stands alone.
+
+By default config seeds only the desktop's own configs (Hyprland, the Omarchy
+shell, foot, and the other tools these stages install); --all-configs seeds
+every shipped config (git, tmux, Chromium, ...) the way a packaged install
+would.
+
+Once registered, `omarchy update` selects the desktop-overlay update path. That
+path fast-forwards the checkout, reconciles packages for the recorded stages,
+runs desktop-overlay migrations, and never runs product migrations or touches
+the host's boot, storage, or disk-security configuration.
+
+Modes:
+  packages             Reconcile packages for already-recorded package stages
+                       without reapplying any stage files. Core reconciliation
+                       restores an absent [omarchy] stanza and pinned key first.
+  artifacts            Reconcile already-recorded static system artifacts for
+                       lock, session-entry, or display-manager without a
+                       package transaction. Display-manager artifacts preserve
+                       SDDM's enabled state, default target, and runtime state.
+  register             Record an existing, successfully probed overlay without
+                       reapplying packages, configuration, or system files.
+                       Add --repair to replace a stale or malformed descriptor
+                       after the same probes succeed.
+
+Options:
+  --theme <name>      Initial theme for the config stage (default: tokyo-night)
+  --all-configs       Seed every shipped config, not just the desktop's
+  --no-session-entry  Drop the session-entry stage from "all"
+  --check             Validate an artifacts operation without writing
+  --repair            Replace an existing descriptor during registration, or
+                      recover an invalid descriptor and missing core packages
+                      with setup core --repair
+  -h, --help          Show this help
+
+To adopt an existing checkout-backed desktop, run this from its checkout:
+
+  ./bin/omarchy-overlay-register core link config audio files connectivity capture power lock session-entry display-manager
+
+Omit stages that are not installed, then add them later with
+`omarchy overlay setup <stage>...`.
+USAGE
+}
+
+# Overridable for tests only; real runs always target the /etc paths.
+system_root="${OMARCHY_OVERLAY_SETUP_SYSTEM_ROOT:-${OMARCHY_DEV_SETUP_SYSTEM_ROOT:-}}"
+system_path() {
+  printf '%s%s' "$system_root" "$1"
+}
+
+pacman_conf="${OMARCHY_OVERLAY_SETUP_PACMAN_CONF:-${OMARCHY_DEV_SETUP_PACMAN_CONF:-$(system_path /etc/pacman.conf)}}"
+omarchy_conf="${OMARCHY_OVERLAY_SETUP_OMARCHY_CONF:-${OMARCHY_DEV_SETUP_OMARCHY_CONF:-$(system_path /etc/omarchy.conf)}}"
+installation_conf="${OMARCHY_INSTALLATION_CONF_PATH:-$(system_path /etc/omarchy/installation.conf)}"
+omarchy_signing_key="40DFB630FF42BCFFB047046CF0134EE680CAC571"
+current_user=$(id -un)
+
+package_stages=(core audio files connectivity capture power display-manager)
+all_stages=(core link config audio files connectivity capture power lock session-entry)
+known_stages=(core link config audio files connectivity capture power lock session-entry display-manager)
+
+# Only configuration the desktop these stages install actually reads.
+# Everything else under config/ changes unrelated application behavior
+# (git, tmux, Chromium, ...) and stays opt-in via --all-configs.
+desktop_configs=(autostart btop foot hypr hyprland-preview-share-picker omarchy wireplumber)
+
+theme="tokyo-night"
+session_entry=1
+all_configs=0
+repair_registration=0
+setup_core_repair=0
+check_artifacts=0
+operation=setup
+declare -A selected=()
+declare -A recorded=()
+status_only=1
+
+if [[ ${1:-} == "packages" || ${1:-} == "artifacts" || ${1:-} == "register" ]]; then
+  operation="$1"
+  shift
+fi
+
+while (($#)); do
+  case "$1" in
+    --theme)
+      theme="${2:-}"
+      if [[ -z $theme ]]; then
+        echo "Error: --theme needs a theme name" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
+    --all-configs)
+      all_configs=1
+      shift
+      ;;
+    --no-session-entry)
+      session_entry=0
+      shift
+      ;;
+    --repair)
+      repair_registration=1
+      shift
+      ;;
+    --check)
+      check_artifacts=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    core|link|config|audio|files|connectivity|capture|power|lock|session-entry|display-manager|display-manager-rollback|status)
+      selected[$1]=1
+      shift
+      ;;
+    all)
+      for stage in "${all_stages[@]}"; do
+        selected[$stage]=1
+      done
+      shift
+      ;;
+    *)
+      echo "Unknown stage or option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if (( ${#selected[@]} == 0 )); then
+  usage >&2
+  exit 1
+fi
+
+if (( session_entry == 0 )); then
+  if [[ -n ${selected[display-manager]:-} ]]; then
+    echo "Error: display-manager requires its Omarchy session entry; remove --no-session-entry." >&2
+    exit 1
+  fi
+  unset 'selected[session-entry]'
+  if (( ${#selected[@]} == 0 )); then
+    echo "Error: --no-session-entry removed the only selected stage; nothing to do." >&2
+    exit 1
+  fi
+fi
+
+if [[ -n ${selected[display-manager]:-} && $operation != "packages" ]]; then
+  selected[session-entry]=1
+fi
+
+if [[ -n ${selected[display-manager-rollback]:-} ]] && (( ${#selected[@]} != 1 )); then
+  echo "Error: display-manager-rollback must be run by itself." >&2
+  exit 1
+fi
+if [[ -n ${selected[status]:-} ]] && (( ${#selected[@]} != 1 )); then
+  echo "Error: status must be run by itself." >&2
+  exit 1
+fi
+
+if [[ $operation != "setup" ]]; then
+  if [[ -n ${selected[status]:-} || -n ${selected[display-manager-rollback]:-} ]]; then
+    echo "Error: $operation accepts setup stages only." >&2
+    exit 1
+  fi
+  if [[ $operation == "packages" ]]; then
+    for stage in "${!selected[@]}"; do
+      is_package_stage=0
+      for package_stage in "${package_stages[@]}"; do
+        if [[ $stage == "$package_stage" ]]; then
+          is_package_stage=1
+          break
+        fi
+      done
+      if (( ! is_package_stage )); then
+        echo "Error: packages cannot reconcile non-package stage '$stage'." >&2
+        exit 1
+      fi
+    done
+  elif [[ $operation == "artifacts" ]]; then
+    for stage in "${!selected[@]}"; do
+      if [[ $stage != "lock" && $stage != "session-entry" && $stage != "display-manager" ]]; then
+        echo "Error: artifacts cannot reconcile stage '$stage'." >&2
+        exit 1
+      fi
+    done
+  fi
+  if [[ $theme != "tokyo-night" ]] || (( all_configs || ! session_entry )); then
+    echo "Error: --theme, --all-configs, and --no-session-entry are setup-only options." >&2
+    exit 1
+  fi
+fi
+
+if (( repair_registration )); then
+  if [[ $operation == "register" ]]; then
+    :
+  elif [[ $operation == "setup" && -n ${selected[core]:-} ]] && (( ${#selected[@]} == 1 )); then
+    setup_core_repair=1
+  else
+    echo "Error: --repair is valid with register, or with setup core by itself." >&2
+    exit 1
+  fi
+fi
+if (( check_artifacts )) && [[ $operation != "artifacts" ]]; then
+  echo "Error: --check is valid only with artifacts." >&2
+  exit 1
+fi
+
+for stage in "${!selected[@]}"; do
+  if [[ $stage != "status" ]]; then
+    status_only=0
+  fi
+done
+
+if (( EUID == 0 )); then
+  echo "Error: run omarchy-overlay-setup as your user, not under sudo." >&2
+  exit 1
+fi
+
+checkout=$(cd -- "$(dirname -- "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)
+manifest="$checkout/install/omarchy-desktop.packages"
+export OMARCHY_PATH="$checkout"
+export PATH="$checkout/bin:$PATH"
+# shellcheck source=../install/helpers/runtime-link.sh
+source "$checkout/install/helpers/runtime-link.sh"
+
+if [[ ! -f $manifest ]]; then
+  echo "Error: $manifest not found — is this an Omarchy source checkout?" >&2
+  exit 1
+fi
+
+group_packages() {
+  awk -v group="$1" '
+    /^# group: / { in_group = ($3 == group); next }
+    { sub(/[[:space:]]*#.*$/, "") }
+    in_group && NF { print }
+  ' "$manifest"
+}
+
+ensure_overlay_package_source() {
+  if ! grep -q '^\[omarchy\]' "$pacman_conf"; then
+    echo "    writes: [omarchy] repo stanza in $pacman_conf (backup kept)"
+    sudo cp -f "$pacman_conf" "$pacman_conf.omarchy-overlay-setup.$(date +%s).bak"
+    # Omarchy packages carry detached signatures, while the repository database
+    # is currently unsigned. Require package signatures without requiring a
+    # database signature that the repository does not publish.
+    # shellcheck disable=SC2016
+    printf '\n[omarchy]\nSigLevel = Required DatabaseOptional\nServer = https://pkgs.omarchy.org/stable/$arch\n' | sudo tee -a "$pacman_conf" >/dev/null
+  fi
+
+  echo "    verifies: Omarchy package signing key $omarchy_signing_key"
+  if ! sudo pacman-key --list-keys "$omarchy_signing_key" >/dev/null 2>&1; then
+    echo "    writes: pinned Omarchy package signing key in /etc/pacman.d/gnupg"
+    sudo pacman-key --recv-keys "$omarchy_signing_key" --keyserver keys.openpgp.org
+  fi
+  sudo pacman-key --lsign-key "$omarchy_signing_key"
+}
+
+stage_selected() {
+  [[ -n ${selected[$1]:-} ]]
+}
+
+# Compatibility path: existing desktop installations keep their original
+# rollback here. Renaming the command must never orphan those transactions.
+display_manager_state_root="$HOME/.local/state/omarchy/dev-setup-desktop/display-manager"
+display_manager_active_file="$display_manager_state_root/active"
+# Frozen index mapping for transactions created before the versioned inventory.
+# Never reorder or extend this array; change display_manager_paths instead.
+display_manager_legacy_paths=(
+  "$(system_path /etc/sddm.conf.d/10-theme.conf)"
+  "$(system_path /etc/sddm.conf.d/10-wayland.conf)"
+  "$(system_path /etc/sddm.conf.d/99-omarchy-login.conf)"
+  "$(system_path /etc/sddm.conf.d/autologin.conf)"
+  "$(system_path /usr/share/sddm/hyprland.lua)"
+  "$(system_path /usr/share/sddm/themes/omarchy)"
+  "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)"
+  "$(system_path /var/lib/sddm/state.conf)"
+)
+display_manager_paths=("${display_manager_legacy_paths[@]}")
+display_manager_recorded_paths=()
+
+validate_display_manager_paths() {
+  local path relative
+  local -A seen=()
+
+  (( $# > 0 )) || return 1
+  for path in "$@"; do
+    # An inventory is data, never shell code or an arbitrary sudo destination.
+    # This scope also permits restoring retired SDDM config files.
+    [[ $path == "$system_root"/* ]] || return 1
+    relative=${path#"$system_root"}
+    case "$relative" in
+      /usr/share/sddm/hyprland.lua|/usr/share/sddm/themes/omarchy|/usr/local/share/wayland-sessions/omarchy.desktop|/var/lib/sddm/state.conf) ;;
+      *) [[ $relative =~ ^/etc/sddm\.conf\.d/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*\.conf$ ]] || return 1 ;;
+    esac
+    [[ -z ${seen[$path]:-} ]] || return 1
+    seen[$path]=1
+  done
+}
+
+read_display_manager_inventory() {
+  local transaction_dir="$1" version
+
+  display_manager_recorded_paths=()
+  if [[ -e $transaction_dir/inventory || -L $transaction_dir/inventory ]]; then
+    [[ -f $transaction_dir/inventory && ! -L $transaction_dir/inventory ]] || return 1
+    {
+      IFS= read -r version || return 1
+      [[ $version == "1" ]] || return 1
+      mapfile -t display_manager_recorded_paths
+    } <"$transaction_dir/inventory"
+  else
+    display_manager_recorded_paths=("${display_manager_legacy_paths[@]}")
+  fi
+  validate_display_manager_paths "${display_manager_recorded_paths[@]}"
+}
+
+write_display_manager_inventory() {
+  local transaction_dir="$1"
+
+  if ! validate_display_manager_paths "${display_manager_recorded_paths[@]}"; then
+    echo "Error: refusing to write an invalid display-manager path inventory; existing transaction is unchanged." >&2
+    return 1
+  fi
+  printf '%s\n' 1 "${display_manager_recorded_paths[@]}" >"$transaction_dir/inventory.new"
+  mv -- "$transaction_dir/inventory.new" "$transaction_dir/inventory"
+}
+
+capture_display_manager_path() {
+  local transaction_dir="$1" index="$2" path="$3"
+
+  if sudo test -e "$path" || sudo test -L "$path"; then
+    # A retry after interruption must replace the incomplete unpublished copy.
+    sudo rm -rf -- "$transaction_dir/backup/$index"
+    sudo cp -aT "$path" "$transaction_dir/backup/$index"
+    printf 'present\n' >"$transaction_dir/path-$index-state"
+    echo "    rollback: captured $path"
+  else
+    printf 'absent\n' >"$transaction_dir/path-$index-state"
+    echo "    rollback: recorded absent path $path"
+  fi
+}
+
+config_stage_complete() {
+  [[ -f $HOME/.config/hypr/hyprland.lua &&
+    -f $HOME/.config/omarchy/branding/about.txt &&
+    -f $HOME/.config/omarchy/branding/screensaver.txt &&
+    -f $HOME/.local/state/omarchy/done/first-run-user &&
+    -L $HOME/.config/btop/themes/current.theme ]]
+}
+
+display_manager_transaction_id() {
+  local transaction_id
+
+  [[ -f $display_manager_active_file ]] || return 1
+  IFS= read -r transaction_id <"$display_manager_active_file"
+  [[ $transaction_id =~ ^[0-9]+$ ]] || return 1
+  [[ -d $display_manager_state_root/transactions/$transaction_id ]] || return 1
+  printf '%s' "$transaction_id"
+}
+
+validate_display_manager_transaction() {
+  local transaction_id="$1"
+  local transaction_dir="$display_manager_state_root/transactions/$transaction_id"
+  local index state
+
+  [[ -f $transaction_dir/sddm-enabled-before ]] || return 1
+  state=$(<"$transaction_dir/sddm-enabled-before")
+  [[ $state == "enabled" || $state == "disabled" ]] || return 1
+
+  [[ -f $transaction_dir/default-target-before ]] || return 1
+  state=$(<"$transaction_dir/default-target-before")
+  [[ $state == "graphical.target" || $state == "multi-user.target" ]] || return 1
+
+  read_display_manager_inventory "$transaction_dir" || return 1
+  for index in "${!display_manager_recorded_paths[@]}"; do
+    [[ -f $transaction_dir/path-$index-state ]] || return 1
+    state=$(<"$transaction_dir/path-$index-state")
+    if [[ $state == "present" ]]; then
+      [[ -e $transaction_dir/backup/$index || -L $transaction_dir/backup/$index ]] || return 1
+    elif [[ $state != "absent" ]]; then
+      return 1
+    fi
+  done
+}
+
+display_manager_artifacts_installed() {
+  local theme_source="$checkout/default/sddm/omarchy"
+  local theme_target
+  theme_target=$(system_path /usr/share/sddm/themes/omarchy)
+
+  package_requirement_satisfied sddm || return 1
+  package_requirement_satisfied qt6-wayland || return 1
+  cmp -s "$checkout/etc/sddm.conf.d/10-theme.conf" "$(system_path /etc/sddm.conf.d/10-theme.conf)" || return 1
+  cmp -s "$checkout/etc/sddm.conf.d/10-wayland.conf" "$(system_path /etc/sddm.conf.d/10-wayland.conf)" || return 1
+  cmp -s "$checkout/default/sddm/hyprland.lua" "$(system_path /usr/share/sddm/hyprland.lua)" || return 1
+  cmp -s "$checkout/default/wayland-sessions/omarchy.desktop" "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)" || return 1
+  diff -qr "$theme_source" "$theme_target" >/dev/null 2>&1 || return 1
+  cmp -s <(printf '[Users]\nRememberLastUser=true\nRememberLastSession=true\n') \
+    "$(system_path /etc/sddm.conf.d/99-omarchy-login.conf)" || return 1
+}
+
+display_manager_configured() {
+  display_manager_artifacts_installed || return 1
+  systemctl is-enabled --quiet sddm.service 2>/dev/null || return 1
+  [[ $(systemctl get-default 2>/dev/null) == "graphical.target" ]]
+}
+
+preflight_display_manager() {
+  local source alias_path alias_target default_target transaction_id
+
+  if ! validate_display_manager_paths "${display_manager_paths[@]}"; then
+    echo "Error: the managed display-manager paths are outside the supported scope, empty, or duplicated; fix the checkout before applying this stage." >&2
+    return 1
+  fi
+
+  for source in \
+    "$checkout/etc/sddm.conf.d/10-theme.conf" \
+    "$checkout/etc/sddm.conf.d/10-wayland.conf" \
+    "$checkout/default/sddm/hyprland.lua" \
+    "$checkout/default/wayland-sessions/omarchy.desktop" \
+    "$checkout/default/sddm/omarchy/Main.qml" \
+    "$checkout/default/sddm/omarchy/metadata.desktop" \
+    "$checkout/default/sddm/omarchy/theme.conf" \
+    "$checkout/default/sddm/omarchy/bullet.png" \
+    "$checkout/default/sddm/omarchy/entry.png" \
+    "$checkout/default/sddm/omarchy/entry-failed.png" \
+    "$checkout/default/sddm/omarchy/lock.png" \
+    "$checkout/default/sddm/omarchy/lock-failed.png" \
+    "$checkout/default/sddm/omarchy/logo.png"; do
+    if [[ ! -f $source ]]; then
+      echo "Error: required SDDM source is missing: $source" >&2
+      exit 1
+    fi
+  done
+  if [[ ! -d $checkout/default/sddm/omarchy ]]; then
+    echo "Error: required SDDM theme is missing: $checkout/default/sddm/omarchy" >&2
+    exit 1
+  fi
+  if find "$checkout/default/sddm/omarchy" -type l -print -quit | grep -q .; then
+    echo "Error: the SDDM theme contains a symlink; refusing to publish checkout-controlled links under /usr/share/sddm." >&2
+    exit 1
+  fi
+
+  alias_path=$(system_path /etc/systemd/system/display-manager.service)
+  if [[ -e $alias_path || -L $alias_path ]]; then
+    alias_target=$(readlink -f "$alias_path" 2>/dev/null || true)
+    if [[ $(basename "$alias_target") != "sddm.service" ]]; then
+      if [[ $operation == "artifacts" ]]; then
+        echo "Error: the recorded display-manager stage no longer owns $alias_path: ${alias_target:-unresolvable}" >&2
+        display_manager_repair_guidance
+      else
+        echo "Error: another display manager owns $alias_path: ${alias_target:-unresolvable}" >&2
+        echo "Disable it explicitly before selecting display-manager; this setup will not replace it." >&2
+      fi
+      exit 1
+    fi
+  fi
+
+  if [[ $operation == "setup" ]]; then
+    default_target=$(systemctl get-default 2>/dev/null || true)
+    if [[ $default_target != "graphical.target" && $default_target != "multi-user.target" ]]; then
+      echo "Error: unsupported default systemd target '$default_target'; expected graphical.target or multi-user.target." >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -f $display_manager_active_file ]]; then
+    transaction_id=$(display_manager_transaction_id || true)
+    if [[ -z $transaction_id ]] || ! validate_display_manager_transaction "$transaction_id"; then
+      echo "Error: the active display-manager rollback record is invalid: $display_manager_active_file" >&2
+      exit 1
+    fi
+  elif [[ $operation == "artifacts" ]]; then
+    echo "Error: display-manager artifact reconciliation requires its original rollback transaction: $display_manager_active_file" >&2
+    display_manager_repair_guidance
+    echo "Refusing to replace it with a post-install baseline." >&2
+    exit 1
+  elif display_manager_artifacts_installed; then
+    echo "Error: the Omarchy display manager is already configured, but its original rollback transaction is missing." >&2
+    echo "Repair the registration with the currently installed stages while omitting display-manager." >&2
+    echo "Refusing to record the installed Omarchy files as a false pre-install baseline." >&2
+    exit 1
+  fi
+}
+
+display_manager_repair_guidance() {
+  local stage command="omarchy overlay register --repair"
+
+  for stage in "${known_stages[@]}"; do
+    if [[ $stage != "display-manager" && -n ${recorded[$stage]:-} ]]; then
+      command+=" $stage"
+    fi
+  done
+  echo "The current greeter and stored rollback files will remain unchanged." >&2
+  echo "Stop managing the stale stage by repairing the ledger while omitting display-manager:" >&2
+  echo "  $command" >&2
+  echo "After repairing the host state, re-adopt it with 'omarchy overlay setup display-manager'." >&2
+}
+
+begin_display_manager_transaction() {
+  local transaction_id transaction_dir index path recorded_path found
+
+  transaction_id=$(display_manager_transaction_id || true)
+  if [[ -n $transaction_id ]]; then
+    validate_display_manager_transaction "$transaction_id" || {
+      echo "Error: refusing to reuse an invalid display-manager rollback record." >&2
+      return 1
+    }
+    transaction_dir="$display_manager_state_root/transactions/$transaction_id"
+    # Publish the legacy mapping before extending it. New paths are captured
+    # before the inventory is atomically extended and before any artifact write.
+    write_display_manager_inventory "$transaction_dir"
+    for path in "${display_manager_paths[@]}"; do
+      found=0
+      for recorded_path in "${display_manager_recorded_paths[@]}"; do
+        if [[ $path == "$recorded_path" ]]; then
+          found=1
+          break
+        fi
+      done
+      if (( ! found )); then
+        index=${#display_manager_recorded_paths[@]}
+        capture_display_manager_path "$transaction_dir" "$index" "$path"
+        display_manager_recorded_paths+=("$path")
+        write_display_manager_inventory "$transaction_dir"
+      fi
+    done
+    echo "    rollback: reusing transaction $transaction_id"
+    return 0
+  fi
+
+  transaction_id=$(date +%s%N)
+  transaction_dir="$display_manager_state_root/transactions/$transaction_id"
+  mkdir -p "$transaction_dir/backup"
+  chmod 0700 "$display_manager_state_root" "$display_manager_state_root/transactions" "$transaction_dir" "$transaction_dir/backup"
+
+  if systemctl is-enabled --quiet sddm.service 2>/dev/null; then
+    printf 'enabled\n' >"$transaction_dir/sddm-enabled-before"
+  else
+    printf 'disabled\n' >"$transaction_dir/sddm-enabled-before"
+  fi
+  systemctl get-default >"$transaction_dir/default-target-before"
+
+  for index in "${!display_manager_paths[@]}"; do
+    path="${display_manager_paths[$index]}"
+    capture_display_manager_path "$transaction_dir" "$index" "$path"
+  done
+  display_manager_recorded_paths=("${display_manager_paths[@]}")
+  write_display_manager_inventory "$transaction_dir"
+
+  printf '%s\n' "$transaction_id" >"$display_manager_active_file.new"
+  mv "$display_manager_active_file.new" "$display_manager_active_file"
+  echo "    rollback: recorded transaction $transaction_id under $display_manager_state_root"
+}
+
+apply_display_manager() {
+  local login_config state_config state_path theme_source theme_target theme_file relative_theme_file autologin_path preserved_dir transaction_id
+
+  echo "    writes: /etc/sddm.conf.d/{10-theme,10-wayland,99-omarchy-login}.conf"
+  echo "    writes: /usr/share/sddm/{hyprland.lua,themes/omarchy/}"
+  echo "    writes: /usr/local/share/wayland-sessions/omarchy.desktop"
+  if [[ $operation == "setup" ]]; then
+    echo "    seeds when absent: /var/lib/sddm/state.conf (last user/session only; no autologin)"
+    echo "    enables: sddm.service for the next boot (not started now)"
+  else
+    echo "    preserves: SDDM enabled state, default target, runtime state.conf, and autologin.conf"
+  fi
+
+  sudo install -Dm644 "$checkout/etc/sddm.conf.d/10-theme.conf" "$(system_path /etc/sddm.conf.d/10-theme.conf)"
+  sudo install -Dm644 "$checkout/etc/sddm.conf.d/10-wayland.conf" "$(system_path /etc/sddm.conf.d/10-wayland.conf)"
+  sudo install -Dm644 "$checkout/default/sddm/hyprland.lua" "$(system_path /usr/share/sddm/hyprland.lua)"
+  sudo install -Dm644 "$checkout/default/wayland-sessions/omarchy.desktop" "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)"
+
+  theme_source="$checkout/default/sddm/omarchy"
+  theme_target=$(system_path /usr/share/sddm/themes/omarchy)
+  sudo rm -rf -- "$theme_target"
+  sudo install -d -m 0755 "$theme_target"
+  while IFS= read -r -d '' theme_file; do
+    relative_theme_file="${theme_file#"$theme_source"/}"
+    sudo install -Dm644 "$theme_file" "$theme_target/$relative_theme_file"
+  done < <(find "$theme_source" -type f -print0)
+
+  login_config=$(mktemp)
+  printf '[Users]\nRememberLastUser=true\nRememberLastSession=true\n' >"$login_config"
+  sudo install -Dm644 "$login_config" "$(system_path /etc/sddm.conf.d/99-omarchy-login.conf)"
+  rm -f "$login_config"
+
+  if [[ $operation == "setup" ]]; then
+    # Setup explicitly requests authenticated login. Keep later host edits as
+    # separate recovery copies without replacing the original rollback baseline.
+    autologin_path=$(system_path /etc/sddm.conf.d/autologin.conf)
+    if sudo test -e "$autologin_path" || sudo test -L "$autologin_path"; then
+      transaction_id=$(display_manager_transaction_id)
+      preserved_dir=$(mktemp -d "$display_manager_state_root/transactions/$transaction_id/autologin-preserved.XXXXXXXX")
+      sudo cp -aT "$autologin_path" "$preserved_dir/autologin.conf"
+      echo "    removes: $autologin_path (recovery copy: $preserved_dir/autologin.conf)"
+      sudo rm -f -- "$autologin_path"
+    fi
+    state_path=$(system_path /var/lib/sddm/state.conf)
+    if ! sudo test -e "$state_path" && ! sudo test -L "$state_path"; then
+      state_config=$(mktemp)
+      printf '[Last]\nSession=omarchy.desktop\nUser=%s\n' "$current_user" >"$state_config"
+      sudo install -Dm644 "$state_config" "$state_path"
+      sudo chown sddm:sddm "$state_path"
+      rm -f "$state_config"
+    fi
+
+    if [[ $(systemctl get-default) == "multi-user.target" ]]; then
+      sudo systemctl set-default graphical.target
+    fi
+    sudo systemctl enable sddm.service
+  fi
+}
+
+rollback_display_manager() {
+  local transaction_id transaction_dir index path state previous_target
+
+  transaction_id=$(display_manager_transaction_id || true)
+  if [[ -z $transaction_id ]] || ! validate_display_manager_transaction "$transaction_id"; then
+    echo "Error: no valid active display-manager rollback record exists." >&2
+    return 1
+  fi
+  transaction_dir="$display_manager_state_root/transactions/$transaction_id"
+
+  echo "==> display-manager-rollback"
+  echo "    restoring transaction: $transaction_id"
+  for ((index = ${#display_manager_recorded_paths[@]} - 1; index >= 0; index--)); do
+    path="${display_manager_recorded_paths[$index]}"
+    state=$(<"$transaction_dir/path-$index-state")
+    sudo rm -rf -- "$path"
+    if [[ $state == "present" ]]; then
+      sudo install -d -m 0755 "$(dirname "$path")"
+      sudo cp -aT "$transaction_dir/backup/$index" "$path"
+    fi
+  done
+
+  if [[ $(<"$transaction_dir/sddm-enabled-before") == "enabled" ]]; then
+    if ! sudo systemctl enable sddm.service; then
+      echo "Warning: could not restore SDDM's enabled state; continuing the file and target rollback." >&2
+    fi
+  else
+    if ! sudo systemctl disable sddm.service; then
+      echo "Warning: could not restore SDDM's disabled state; continuing the file and target rollback." >&2
+    fi
+  fi
+
+  previous_target=$(<"$transaction_dir/default-target-before")
+  if [[ $(systemctl get-default) != "$previous_target" ]]; then
+    sudo systemctl set-default "$previous_target"
+  fi
+
+  printf '%s\n' "$(date --iso-8601=seconds)" >"$transaction_dir/rolled-back-at"
+  rm -f "$display_manager_active_file"
+  echo "    restored prior SDDM files and default target; attempted to restore the enabled state"
+  echo "    retained packages: sddm qt6-wayland (safe, inert when the service is disabled)"
+}
+
+# The product uses the four-face basic package to keep fresh installs small.
+# A plain Arch host may already carry the complete JetBrains Mono Nerd Font
+# family, which is a functional superset but conflicts by package name. Keep
+# that host choice instead of asking pacman to remove it during an overlay.
+package_requirement_satisfied() {
+  local package="$1"
+
+  if pacman -Q "$package" >/dev/null 2>&1; then
+    return 0
+  elif [[ $package == "ttf-jetbrains-mono-nerd-basic" ]] && pacman -Q ttf-jetbrains-mono-nerd >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# The path /etc/omarchy.conf resolves to, empty when unreadable. Existence is
+# not enough: a conf pointing at another (or deleted) checkout would make the
+# session load different code than the one being configured here.
+linked_checkout() {
+  [[ -f $omarchy_conf ]] || return 1
+  (
+    OMARCHY_PATH=""
+    # shellcheck source=/dev/null
+    . "$omarchy_conf" 2>/dev/null || true
+    printf '%s' "${OMARCHY_PATH:-}"
+  )
+}
+
+render_uwsm_environment() {
+  cat <<'ENV'
+# Written by omarchy-overlay-setup. uwsm doesn't source /etc/profile.d,
+# so resolve OMARCHY_PATH, then load the packaged session environment
+# (session defaults, user overrides, and optional tool activation) from the checkout.
+[ -r /etc/omarchy.conf ] && . /etc/omarchy.conf
+[ -r "${OMARCHY_PATH:-/usr/share/omarchy}/default/bash/env-bootstrap" ] && . "${OMARCHY_PATH:-/usr/share/omarchy}/default/bash/env-bootstrap"
+[ -r "${OMARCHY_PATH:-/usr/share/omarchy}/default/uwsm/env.d/10-omarchy" ] && . "${OMARCHY_PATH:-/usr/share/omarchy}/default/uwsm/env.d/10-omarchy"
+ENV
+}
+
+link_stage_complete() {
+  local linked_path uwsm_env_file="$HOME/.config/uwsm/env.d/10-omarchy"
+
+  linked_path=$(linked_checkout || true)
+  [[ -n $linked_path ]] || return 1
+  [[ $(realpath -m "$linked_path" 2>/dev/null) == "$checkout" ]] || return 1
+  [[ -f $uwsm_env_file ]] || return 1
+  grep -Fqx '[ -r /etc/omarchy.conf ] && . /etc/omarchy.conf' "$uwsm_env_file" || return 1
+  # These are the literal variable references the generated environment must contain.
+  # shellcheck disable=SC2016
+  grep -Fqx '[ -r "${OMARCHY_PATH:-/usr/share/omarchy}/default/bash/env-bootstrap" ] && . "${OMARCHY_PATH:-/usr/share/omarchy}/default/bash/env-bootstrap"' "$uwsm_env_file" || return 1
+  # shellcheck disable=SC2016
+  grep -Fqx '[ -r "${OMARCHY_PATH:-/usr/share/omarchy}/default/uwsm/env.d/10-omarchy" ] && . "${OMARCHY_PATH:-/usr/share/omarchy}/default/uwsm/env.d/10-omarchy"' "$uwsm_env_file"
+}
+
+require_link() {
+  local linked_path
+  linked_path=$(linked_checkout || true)
+  if [[ -z $linked_path ]]; then
+    echo "Error: $omarchy_conf is missing — run 'omarchy overlay setup link' first." >&2
+    exit 1
+  fi
+  if [[ $(realpath -m "$linked_path" 2>/dev/null) != "$checkout" ]]; then
+    echo "Error: $omarchy_conf points at $linked_path, not this checkout — run 'omarchy overlay setup link' first." >&2
+    exit 1
+  fi
+}
+
+load_recorded_stages() {
+  local output stage
+  local -a stages=()
+
+  recorded=()
+  [[ -e $installation_conf ]] || return 1
+  if ! output=$(
+    OMARCHY_INSTALLATION_CONF_PATH="$installation_conf" \
+      OMARCHY_RUNTIME_CONF_PATH="$omarchy_conf" \
+      omarchy-overlay-stages
+  ); then
+    return 2
+  fi
+  mapfile -t stages <<<"$output"
+  for stage in "${stages[@]}"; do
+    recorded[$stage]=1
+  done
+}
+
+write_recorded_stages() {
+  local descriptor stage separator=""
+  local stage_csv=""
+
+  for stage in "${known_stages[@]}"; do
+    if [[ -n ${recorded[$stage]:-} ]]; then
+      stage_csv+="$separator$stage"
+      separator=,
+    fi
+  done
+  if [[ -z $stage_csv ]]; then
+    echo "Error: refusing to write an empty desktop-overlay stage ledger." >&2
+    return 1
+  fi
+
+  descriptor=$(mktemp)
+  printf 'OMARCHY_INSTALLATION=desktop_overlay\nOMARCHY_DESKTOP_OWNER=%s\nOMARCHY_DESKTOP_STAGES=%s\n' \
+    "$current_user" "$stage_csv" >"$descriptor"
+  if ! sudo install -Dm644 "$descriptor" "$installation_conf"; then
+    rm -f "$descriptor"
+    return 1
+  fi
+  rm -f "$descriptor"
+}
+
+record_selected_stages() {
+  local stage
+
+  # The ledger was validated before mutation. Extend that in-memory baseline.
+  for stage in "${known_stages[@]}"; do
+    if stage_selected "$stage"; then
+      recorded[$stage]=1
+    fi
+  done
+  mark_overlay_migration_baseline
+  write_recorded_stages
+}
+
+stage_recorded() {
+  [[ -n ${recorded[$1]:-} ]]
+}
+
+require_recorded_selected_stages() {
+  local stage
+
+  if ! load_recorded_stages; then
+    echo "Error: $installation_conf does not register a desktop overlay." >&2
+    echo "Run 'omarchy overlay register <stage>...' before reconciliation." >&2
+    exit 1
+  fi
+  for stage in "${!selected[@]}"; do
+    if ! stage_recorded "$stage"; then
+      echo "Error: package stage '$stage' is not recorded in $installation_conf." >&2
+      exit 1
+    fi
+  done
+}
+
+probe_registration_stage() {
+  local stage="$1" package transaction_id
+  local is_package_stage=0
+  local -a stage_pkgs=()
+
+  for package_stage in "${package_stages[@]}"; do
+    if [[ $stage == "$package_stage" ]]; then
+      is_package_stage=1
+      mapfile -t stage_pkgs < <(group_packages "$stage")
+      for package in "${stage_pkgs[@]}"; do
+        if ! package_requirement_satisfied "$package"; then
+          echo "Error: cannot register stage '$stage'; package '$package' is missing." >&2
+          return 1
+        fi
+      done
+      break
+    fi
+  done
+
+  if (( is_package_stage )) && [[ $stage != "display-manager" ]]; then
+    return 0
+  fi
+
+  case "$stage" in
+    link)
+      link_stage_complete || {
+        echo "Error: cannot register stage 'link'; $omarchy_conf or the UWSM environment is missing or stale." >&2
+        return 1
+      }
+      ;;
+    config)
+      config_stage_complete || {
+        echo "Error: cannot register stage 'config'; its user configuration is incomplete." >&2
+        return 1
+      }
+      ;;
+    lock)
+      [[ -f $(system_path /etc/pam.d/omarchy-lock-password) ]] || {
+        echo "Error: cannot register stage 'lock'; its PAM service is absent." >&2
+        return 1
+      }
+      ;;
+    session-entry)
+      cmp -s "$checkout/default/wayland-sessions/omarchy.desktop" \
+        "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)" || {
+        echo "Error: cannot register stage 'session-entry'; its installed file does not match this checkout." >&2
+        return 1
+      }
+      ;;
+    display-manager)
+      display_manager_configured || {
+        echo "Error: cannot register stage 'display-manager'; SDDM is not fully configured." >&2
+        return 1
+      }
+      transaction_id=$(display_manager_transaction_id || true)
+      if [[ -z $transaction_id ]] || ! validate_display_manager_transaction "$transaction_id"; then
+        echo "Error: cannot register stage 'display-manager'; no valid pre-install rollback transaction exists." >&2
+        echo "Register without display-manager, or restore the original transaction before adopting that stage." >&2
+        return 1
+      fi
+      ;;
+    core|audio|files|connectivity|capture|power)
+      ;;
+    *)
+      echo "Error: cannot probe unknown desktop-overlay stage '$stage'." >&2
+      return 1
+      ;;
+  esac
+}
+
+mark_overlay_migration_baseline() {
+  local migration migration_dir="$checkout/migrations/desktop-overlay"
+  local state_dir="${OMARCHY_OVERLAY_MIGRATION_STATE:-$HOME/.local/state/omarchy/desktop-overlay-migrations}"
+  local baseline_marker="$state_dir/.baseline-established"
+
+  mkdir -p "$state_dir"
+  [[ ! -e $baseline_marker ]] || return 0
+  for migration in "$migration_dir"/*.sh; do
+    [[ -f $migration ]] || continue
+    touch "$state_dir/${migration##*/}"
+  done
+  touch "$baseline_marker"
+}
+
+# Product status takes precedence over a stale overlay descriptor. Mutation
+# still uses the ownership and product-package refusals below.
+if stage_selected status; then
+  echo "Omarchy desktop setup status (checkout: $checkout)"
+  product_packages=()
+  for product_pkg in omarchy omarchy-dev omarchy-settings omarchy-settings-dev; do
+    if pacman -Q "$product_pkg" >/dev/null 2>&1; then
+      product_packages+=("$product_pkg")
+    fi
+  done
+  if (( ${#product_packages[@]} > 0 )); then
+    echo "  installation:  packaged Omarchy product"
+    echo "  product:       ${product_packages[*]} installed"
+    echo "  registration:  desktop overlay not applicable"
+    exit 0
+  fi
+fi
+
+# Repair corrects a ledger, it does not transfer the overlay or its per-user
+# migration and rollback state. Rollback itself remains independent of a ledger.
+if [[ -r $installation_conf ]] && ! stage_selected display-manager-rollback; then
+  mapfile -t descriptor_types < <(sed -n -E 's/^[[:space:]]*OMARCHY_INSTALLATION=([^[:space:]#]+)[[:space:]]*(#.*)?$/\1/p' "$installation_conf")
+  mapfile -t descriptor_owners < <(sed -n -E 's/^[[:space:]]*OMARCHY_DESKTOP_OWNER=([^[:space:]#]+)[[:space:]]*(#.*)?$/\1/p' "$installation_conf")
+  if (( ${#descriptor_types[@]} == 1 && ${#descriptor_owners[@]} == 1 )) && [[ ${descriptor_types[0]} == "desktop_overlay" && ${descriptor_owners[0]} != "$current_user" ]]; then
+    echo "Desktop overlay is registered to '${descriptor_owners[0]}'; run as that user." >&2
+    exit 1
+  fi
+fi
+
+# --- Read-only status report; never needs sudo and never writes.
+if stage_selected status; then
+  if [[ -e $installation_conf ]]; then
+    if load_recorded_stages; then
+      echo "  registration: desktop overlay owned by $current_user"
+    else
+      echo "  registration: invalid descriptor ($installation_conf)"
+      echo "  repair: ./bin/omarchy-overlay-register --repair <stage>..."
+      exit 1
+    fi
+  else
+    echo "  registration: not registered"
+  fi
+  for stage in "${package_stages[@]}"; do
+    mapfile -t stage_pkgs < <(group_packages "$stage")
+    missing=0
+    for package in "${stage_pkgs[@]}"; do
+      package_requirement_satisfied "$package" || (( missing += 1 ))
+    done
+    if (( missing == 0 )); then
+      state="complete (${#stage_pkgs[@]} packages)"
+    else
+      state="$missing of ${#stage_pkgs[@]} packages missing"
+    fi
+    if stage_recorded "$stage"; then
+      echo "  $stage: $state; recorded"
+    else
+      echo "  $stage: $state; not recorded"
+    fi
+  done
+  linked_path=$(linked_checkout || true)
+  if [[ -z $linked_path ]]; then
+    state="not linked ($omarchy_conf absent)"
+  elif [[ $(realpath -m "$linked_path" 2>/dev/null) == "$checkout" ]]; then
+    state="linked to this checkout"
+  else
+    state="points at $linked_path, not this checkout"
+  fi
+  if stage_recorded link; then
+    state+="; recorded"
+  else
+    state+="; not recorded"
+  fi
+  echo "  link: $state"
+  if [[ -f $HOME/.config/uwsm/env.d/10-omarchy ]]; then
+    echo "  link: uwsm environment present"
+  else
+    echo "  link: uwsm environment absent"
+  fi
+  if config_stage_complete; then
+    state="seeded (theme: $(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null || echo none))"
+  else
+    state="not seeded"
+  fi
+  if stage_recorded config; then
+    state+="; recorded"
+  else
+    state+="; not recorded"
+  fi
+  echo "  config: $state"
+  if [[ -f $(system_path /etc/pam.d/omarchy-lock-password) ]]; then
+    state="PAM services present"
+  else
+    state="PAM services absent"
+  fi
+  if stage_recorded lock; then
+    state+="; recorded"
+  else
+    state+="; not recorded"
+  fi
+  echo "  lock: $state"
+  if [[ -f $(system_path /usr/local/share/wayland-sessions/omarchy.desktop) ]]; then
+    state="present"
+  else
+    state="absent"
+  fi
+  if stage_recorded session-entry; then
+    state+="; recorded"
+  else
+    state+="; not recorded"
+  fi
+  echo "  session-entry: $state"
+  if display_manager_configured; then
+    state="configured and enabled"
+  else
+    state="not configured"
+  fi
+  if stage_recorded display-manager; then
+    state+="; recorded"
+  else
+    state+="; not recorded"
+  fi
+  echo "  display-manager: $state"
+  if transaction_id=$(display_manager_transaction_id 2>/dev/null) && validate_display_manager_transaction "$transaction_id"; then
+    echo "  display-manager-rollback: available (transaction $transaction_id)"
+  elif [[ -f $display_manager_active_file ]]; then
+    echo "  display-manager-rollback: invalid active record"
+  else
+    echo "  display-manager-rollback: unavailable"
+  fi
+  if (( status_only )); then
+    exit 0
+  fi
+fi
+
+# --- Everything below acts on the system.
+
+if stage_selected config; then
+  # The same normalization and validation omarchy-theme-set applies, so every
+  # bad value fails here, before sudo and before the system has been modified.
+  raw_theme=$theme
+  theme=$(echo "$theme" | sed -E 's/<[^>]+>//g' | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+  if [[ -z $theme || $theme == .* || $theme == */* ]]; then
+    echo "Error: invalid theme name: $raw_theme" >&2
+    exit 1
+  fi
+  if [[ ! -d $checkout/themes/$theme ]]; then
+    echo "Error: theme '$theme' does not exist under $checkout/themes" >&2
+    exit 1
+  fi
+  for branding_source in "$checkout/icon.txt" "$checkout/logo.txt"; do
+    if [[ ! -f $branding_source ]]; then
+      echo "Error: required branding source is missing: $branding_source" >&2
+      exit 1
+    fi
+  done
+  for branding_target in "$HOME/.config/omarchy/branding/about.txt" "$HOME/.config/omarchy/branding/screensaver.txt"; do
+    if [[ -L $branding_target && ! -e $branding_target ]]; then
+      echo "Error: refusing to replace dangling branding symlink: $branding_target" >&2
+      exit 1
+    elif [[ -e $branding_target && ! -f $branding_target ]]; then
+      echo "Error: refusing to replace non-file branding path: $branding_target" >&2
+      exit 1
+    fi
+  done
+fi
+
+# This bootstrap is for systems the Omarchy product did not install. On a
+# packaged install the desktop is already set up; pointing it at a checkout
+# is omarchy-dev-link's job.
+for product_pkg in omarchy omarchy-dev omarchy-settings omarchy-settings-dev; do
+  if pacman -Q "$product_pkg" >/dev/null 2>&1; then
+    echo "Error: the $product_pkg package is installed — this system was set up by the Omarchy product." >&2
+    echo "Use omarchy-dev-link to point an Omarchy install at a checkout instead." >&2
+    exit 1
+  fi
+done
+
+if [[ $operation == "setup" && ! -e $installation_conf ]] && stage_selected core && ! stage_selected link; then
+  existing_checkout=$(linked_checkout || true)
+  if [[ -n $existing_checkout && $(realpath -m "$existing_checkout" 2>/dev/null) == "$checkout" ]]; then
+    echo "Error: this checkout is already linked as an unregistered desktop overlay." >&2
+    echo "Adopt the existing installation in one step before adding or reapplying stages:" >&2
+    echo "  ./bin/omarchy-overlay-register core link config audio files connectivity capture power lock session-entry display-manager" >&2
+    echo "Omit stages that are not installed. If this is an incomplete new setup, run 'omarchy overlay setup core link' instead." >&2
+    exit 1
+  fi
+fi
+
+if (( setup_core_repair )); then
+  if [[ ! -e $installation_conf ]]; then
+    echo "Error: setup core --repair needs an existing invalid descriptor; use setup core for a new overlay." >&2
+    exit 1
+  fi
+  if load_recorded_stages >/dev/null 2>&1; then
+    echo "Error: $installation_conf already contains a valid overlay ledger; run setup core without --repair." >&2
+    exit 1
+  fi
+fi
+
+if [[ -e $installation_conf ]] && ! { [[ $operation == "register" ]] && (( repair_registration )); } && (( ! setup_core_repair )) && ! stage_selected display-manager-rollback; then
+  if ! load_recorded_stages; then
+    echo "Repair it with 'omarchy overlay register --repair <stage>...' after verifying the installed stages." >&2
+    exit 1
+  fi
+fi
+
+# Status must remain able to diagnose a stale link, and selecting link is the
+# repair. Every other operation against an already-linked overlay must run from
+# the checkout /etc/omarchy.conf names; otherwise it could reconcile one tree
+# while the next desktop session executes another.
+if [[ -e $installation_conf && -n ${recorded[link]:-} && -z ${selected[status]:-} && -z ${selected[display-manager-rollback]:-} && -z ${selected[link]:-} ]]; then
+  require_link
+fi
+
+if [[ $operation == "packages" || $operation == "artifacts" ]]; then
+  require_recorded_selected_stages
+fi
+
+if [[ $operation == "setup" && -z ${selected[status]:-} && -z ${selected[display-manager-rollback]:-} ]]; then
+  if [[ ! -e $installation_conf && -z ${selected[core]:-} ]]; then
+    echo "Error: begin a new overlay with 'omarchy overlay setup core', or register an existing overlay with 'omarchy overlay register <stage>...'." >&2
+    exit 1
+  fi
+  for stage in "${!selected[@]}"; do
+    if [[ $stage != "core" ]] && ! stage_selected core && ! stage_recorded core; then
+      echo "Error: setup stage '$stage' requires the core stage to be recorded first." >&2
+      exit 1
+    fi
+    if [[ $stage == "config" || $stage == "display-manager" ]] && ! stage_selected link && ! stage_recorded link; then
+      echo "Error: setup stage '$stage' requires the link stage to be recorded first." >&2
+      exit 1
+    fi
+    if [[ $stage == "display-manager" ]] && ! stage_selected config && ! stage_recorded config; then
+      echo "Error: setup stage 'display-manager' requires the config stage to be recorded first." >&2
+      exit 1
+    fi
+  done
+fi
+
+if [[ $operation == "register" ]]; then
+  if [[ -e $installation_conf ]] && (( ! repair_registration )); then
+    echo "Error: $installation_conf already exists; use setup stages to extend a registered overlay, or register --repair to replace a stale descriptor." >&2
+    exit 1
+  fi
+
+  for stage in "${!selected[@]}"; do
+    if [[ $stage != "core" ]] && ! stage_selected core; then
+      echo "Error: registering '$stage' also requires the core stage to be recorded." >&2
+      exit 1
+    fi
+    if [[ $stage == "config" || $stage == "display-manager" ]] && ! stage_selected link; then
+      echo "Error: registering '$stage' also requires the link stage to be recorded." >&2
+      exit 1
+    fi
+    if [[ $stage == "display-manager" ]] && ! stage_selected config; then
+      echo "Error: registering 'display-manager' also requires the config stage to be recorded." >&2
+      exit 1
+    fi
+  done
+
+  for stage in "${known_stages[@]}"; do
+    if stage_selected "$stage"; then
+      echo "==> verify $stage"
+      probe_registration_stage "$stage"
+      recorded[$stage]=1
+    fi
+  done
+
+  sudo -v
+  mark_overlay_migration_baseline
+  write_recorded_stages
+  if (( repair_registration )); then
+    echo "Repaired desktop-overlay registration in $installation_conf"
+  else
+    echo "Registered desktop overlay in $installation_conf"
+  fi
+  exit 0
+fi
+
+if stage_selected display-manager-rollback; then
+  transaction_id=$(display_manager_transaction_id || true)
+  if [[ -z $transaction_id ]] || ! validate_display_manager_transaction "$transaction_id"; then
+    echo "Error: no valid active display-manager rollback record exists." >&2
+    echo "Nothing can be restored; repair the registration with the currently installed stages while omitting display-manager." >&2
+    exit 1
+  fi
+  sudo -v
+  rollback_display_manager
+  if [[ -e $installation_conf ]]; then
+    if load_recorded_stages; then
+      unset 'recorded[display-manager]'
+      if ! cmp -s "$checkout/default/wayland-sessions/omarchy.desktop" \
+        "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)"; then
+        unset 'recorded[session-entry]'
+      fi
+      write_recorded_stages
+    else
+      echo "Warning: the invalid installation descriptor was left unchanged; repair it separately with 'omarchy overlay register --repair <stage>...'." >&2
+    fi
+  fi
+  exit 0
+fi
+
+# Validate the staged dependency graph before a package transaction or any
+# other write. In particular, "core config" without link must not upgrade the
+# system and only then discover that config cannot run.
+if stage_selected config && ! stage_selected link; then
+  require_link
+fi
+
+if stage_selected display-manager && [[ $operation != "packages" && $operation != "register" ]]; then
+  if ! stage_selected link; then
+    require_link
+  fi
+  if [[ $operation == "setup" ]] && ! stage_selected config && ! config_stage_complete; then
+    echo "Error: display-manager needs the seeded desktop config — run 'omarchy overlay setup config' first." >&2
+    exit 1
+  fi
+  preflight_display_manager
+fi
+
+if [[ $operation == "artifacts" ]]; then
+  if stage_selected lock && [[ ! -x $checkout/bin/omarchy-apply-lock ]]; then
+    echo "Error: lock artifact source is missing: $checkout/bin/omarchy-apply-lock" >&2
+    exit 1
+  fi
+  if stage_selected session-entry && [[ ! -f $checkout/default/wayland-sessions/omarchy.desktop ]]; then
+    echo "Error: session-entry artifact source is missing: $checkout/default/wayland-sessions/omarchy.desktop" >&2
+    exit 1
+  fi
+fi
+
+# Update-time preflight intentionally runs before package reconciliation. It
+# validates checkout sources and rollback integrity, but does not require the
+# packages that the next step is responsible for restoring.
+if (( check_artifacts )); then
+  exit 0
+fi
+
+requires_core=0
+for stage in "${!selected[@]}"; do
+  if [[ $stage != "core" && $stage != "status" && $stage != "display-manager-rollback" ]]; then
+    requires_core=1
+    break
+  fi
+done
+if (( requires_core )) && ! stage_selected core; then
+  mapfile -t core_pkgs < <(group_packages core)
+  missing_core_pkgs=()
+  for package in "${core_pkgs[@]}"; do
+    package_requirement_satisfied "$package" || missing_core_pkgs+=("$package")
+  done
+  if (( ${#missing_core_pkgs[@]} > 0 )); then
+    echo "Error: the core stage is incomplete — run 'omarchy overlay setup core' first." >&2
+    echo "Missing core packages: ${missing_core_pkgs[*]}" >&2
+    exit 1
+  fi
+fi
+
+# --- Packages for every selected package stage, in one transaction.
+packages=()
+if [[ $operation != "artifacts" ]]; then
+  for stage in "${package_stages[@]}"; do
+    if stage_selected "$stage"; then
+      mapfile -t stage_pkgs < <(group_packages "$stage")
+      echo "==> $stage"
+      echo "    packages: ${stage_pkgs[*]}"
+      for package in "${stage_pkgs[@]}"; do
+        if [[ $package == "ttf-jetbrains-mono-nerd-basic" ]] && pacman -Q ttf-jetbrains-mono-nerd >/dev/null 2>&1; then
+          echo "    preserving installed package: ttf-jetbrains-mono-nerd (satisfies $package)"
+        else
+          packages+=("$package")
+        fi
+      done
+    fi
+  done
+fi
+
+if (( ${#packages[@]} > 0 )) || { [[ $operation == "setup" ]] && (( ! status_only )); }; then
+  # A full upgrade on a fresh Arch system can outlive sudo's timestamp. Keep
+  # the credential alive so later selected stages do not fail halfway through
+  # the setup or prompt again after the package transaction.
+  # shellcheck source=/dev/null
+  source "$checkout/bin/omarchy-sudo-keepalive"
+elif (( ! status_only )); then
+  sudo -v
+fi
+
+if [[ $operation == "setup" || $operation == "packages" ]] && stage_selected core; then
+  ensure_overlay_package_source
+fi
+
+if (( ${#packages[@]} > 0 )); then
+  echo "Installing selected package stages (full system upgrade)"
+  pacman_args=(-Syu --needed)
+  if [[ $operation == "packages" || ${OMARCHY_UPDATE_UNATTENDED:-0} == "1" ]]; then
+    pacman_args+=(--noconfirm)
+  fi
+  sudo pacman "${pacman_args[@]}" "${packages[@]}"
+fi
+
+if [[ $operation == "packages" ]]; then
+  exit 0
+fi
+
+# --- link: point the system and the uwsm session at this checkout.
+if stage_selected link; then
+  echo "==> link"
+  echo "    writes: $omarchy_conf (the dev sudoers policy is NOT installed)"
+  echo "    writes: ~/.config/uwsm/env.d/10-omarchy (existing file backed up to ~/.config/uwsm/backups/)"
+  omarchy_write_runtime_link "$checkout" 0 "$omarchy_conf" "$(system_path /etc/sudoers.d/omarchy-dev-path)"
+
+  install -d "$HOME/.config/uwsm/env.d"
+  uwsm_env_file="$HOME/.config/uwsm/env.d/10-omarchy"
+  uwsm_env_staged=$(mktemp)
+  # Static content on purpose: the checkout path lives only in /etc/omarchy.conf,
+  # where the shared runtime-link writer already wrote it correctly quoted, so no pathname
+  # needs escaping here and the file keeps working if the checkout is re-linked.
+  render_uwsm_environment >"$uwsm_env_staged"
+  if [[ -f $uwsm_env_file ]] && ! cmp -s "$uwsm_env_staged" "$uwsm_env_file"; then
+    # uwsm sources every file in env.d, so a backup left in that directory
+    # would be executed right after the file that replaced it. Keep backups
+    # outside the sourced directory.
+    uwsm_backup_dir="$HOME/.config/uwsm/backups"
+    uwsm_env_backup="$uwsm_backup_dir/10-omarchy.bak.$(date +%s)"
+    install -d "$uwsm_backup_dir"
+    cp -f "$uwsm_env_file" "$uwsm_env_backup"
+    echo "Backed up existing $uwsm_env_file to $uwsm_env_backup"
+  fi
+  install -m 0644 "$uwsm_env_staged" "$uwsm_env_file"
+  rm -f "$uwsm_env_staged"
+fi
+
+# --- config: user-level desktop configuration. Requires link, because the
+# seeded configs and the session resolve everything through /etc/omarchy.conf.
+if stage_selected config; then
+  echo "==> config"
+  require_link
+  echo "    writes: ~/.local/share/fonts/omarchy.ttf, ~/.config desktop configs (backups kept),"
+  echo "    writes: missing ~/.config/omarchy/branding/{about,screensaver}.txt defaults (existing files preserved),"
+  echo "    writes: theme state under ~/.local/state/omarchy/, btop theme link, first-run marker"
+
+  install -Dm644 "$checkout/default/fonts/omarchy/omarchy.ttf" "$HOME/.local/share/fonts/omarchy.ttf"
+  fc-cache -f >/dev/null
+
+  branding_dir="$HOME/.config/omarchy/branding"
+  install -d "$branding_dir"
+  if [[ ! -e $branding_dir/about.txt ]]; then
+    install -m 0644 "$checkout/icon.txt" "$branding_dir/about.txt"
+  fi
+  if [[ ! -e $branding_dir/screensaver.txt ]]; then
+    install -m 0644 "$checkout/logo.txt" "$branding_dir/screensaver.txt"
+  fi
+
+  if (( all_configs )); then
+    echo "Seeding every shipped config from $checkout/config (existing files are backed up)"
+    seed_roots=("$checkout/config")
+  else
+    echo "Seeding desktop configs from $checkout/config (existing files are backed up)"
+    seed_roots=()
+    for config_dir in "${desktop_configs[@]}"; do
+      if [[ -e $checkout/config/$config_dir ]]; then
+        seed_roots+=("$checkout/config/$config_dir")
+      fi
+    done
+  fi
+  while IFS= read -r -d '' config_file; do
+    omarchy-refresh-config "${config_file#"$checkout"/config/}"
+  done < <(find "${seed_roots[@]}" -type f -print0)
+
+  echo "Generating the initial theme: $theme"
+  OMARCHY_THEME_HEADLESS=1 omarchy-theme-set "$theme"
+
+  # Headless generation avoids restarting applications while the checkout is
+  # being seeded, but it also skips the GNOME/GTK synchronization that normal
+  # first-run provisioning performs. Apply that narrow user-session hook so
+  # GTK and libadwaita applications match the selected light/dark mode and use
+  # the product's icon theme before first-run is marked complete below.
+  omarchy-theme-set-gnome
+
+  mkdir -p "$HOME/.config/btop/themes"
+  ln -snf "$HOME/.local/state/omarchy/current/theme/btop.theme" "$HOME/.config/btop/themes/current.theme"
+
+  # The default session autostart runs omarchy-provision-first-run, which
+  # enables user units and finalization the packaged product ships. None of
+  # that exists on a checkout-only install; mark it complete so first login
+  # doesn't try.
+  omarchy-done mark first-run-user
+
+  cat <<DONE
+
+Desktop configured from: $checkout
+
+Test the session from a TTY with:
+  uwsm start -g -1 -e -D Hyprland hyprland.desktop
+DONE
+fi
+
+# --- files: register the default directory handler once the file manager exists.
+if stage_selected files; then
+  if omarchy-cmd-present xdg-mime; then
+    echo "==> files: registering nautilus as the inode/directory handler"
+    xdg-mime default org.gnome.Nautilus.desktop inode/directory
+  else
+    echo "==> files: xdg-mime not available; skip registering the default directory handler" >&2
+  fi
+fi
+
+# --- lock: explicit opt-in PAM services for the shell's lock screen.
+if stage_selected lock; then
+  echo "==> lock"
+  echo "    writes: /etc/pam.d/omarchy-lock-* (new PAM services; nothing existing is modified)"
+  omarchy-apply-lock
+fi
+
+# A display-manager run owns the session entry as part of its rollback boundary,
+# so capture the baseline immediately before either stage writes that file.
+if stage_selected display-manager; then
+  echo "==> display-manager"
+  echo "    rollback: records the prior SDDM files, enabled state, and default target before configuration"
+  begin_display_manager_transaction
+fi
+
+# --- session-entry: explicit opt-in greeter session file.
+if stage_selected session-entry; then
+  echo "==> session-entry"
+  echo "    writes: /usr/local/share/wayland-sessions/omarchy.desktop"
+  sudo install -Dm644 "$checkout/default/wayland-sessions/omarchy.desktop" "$(system_path /usr/local/share/wayland-sessions/omarchy.desktop)"
+fi
+
+# --- display-manager: explicit SDDM integration. It runs after the independent
+# session entry, using the baseline recorded immediately before that entry was
+# written. The service is enabled, never started in-place.
+if stage_selected display-manager; then
+  apply_display_manager
+fi
+
+if [[ $operation == "artifacts" ]]; then
+  exit 0
+fi
+
+if (( setup_core_repair )); then
+  descriptor_backup="$installation_conf.omarchy-overlay-repair.$(date +%s%N).bak"
+  probe_registration_stage core
+  recorded=()
+  recorded[core]=1
+  mark_overlay_migration_baseline
+  sudo mv -- "$installation_conf" "$descriptor_backup"
+  if ! write_recorded_stages; then
+    sudo mv -- "$descriptor_backup" "$installation_conf"
+    echo "Error: could not write the repaired overlay descriptor; restored the original from $descriptor_backup." >&2
+    exit 1
+  fi
+  echo "Repaired desktop-overlay registration in $installation_conf"
+  echo "Previous descriptor: $descriptor_backup"
+  exit 0
+fi
+
+record_selected_stages
+
+cat <<'DONE'
+
+Left unconfigured, deliberately: bootloader, initramfs, Secure Boot,
+encryption, storage, Snapper, general system services, and the
+omarchy/omarchy-settings packages. SDDM is configured and enabled only when
+the explicit display-manager stage is selected. The optional user units a
+packaged install enables (bluetooth pairing agent, sleep lock, ...) were not
+set up either; see install/user/first-run/enable-user-units.sh for that list.
+Run "omarchy overlay status" to see what is and isn't in place.
+DONE

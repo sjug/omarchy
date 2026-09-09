@@ -9,7 +9,16 @@ trap 'rm -rf "$test_tmp"' EXIT
 
 test_root="$test_tmp/omarchy"
 test_home="$test_tmp/home"
-mkdir -p "$test_root/migrations" "$test_home"
+stub_bin="$test_tmp/bin"
+mkdir -p "$test_root/migrations" "$test_home" "$stub_bin"
+
+cat >"$stub_bin/omarchy-installation-type" <<'SH'
+#!/bin/bash
+echo product
+SH
+chmod +x "$stub_bin/omarchy-installation-type"
+
+export PATH="$stub_bin:$PATH"
 
 cat >"$test_root/migrations/100-first.sh" <<'SH'
 [[ $OMARCHY_PATH == "$TEST_EXPECTED_OMARCHY_PATH" ]]

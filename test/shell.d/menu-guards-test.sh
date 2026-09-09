@@ -69,6 +69,11 @@ assert(
 // keeps forking once per row that reads it.
 const fs = require('fs')
 const defaultItems = menu.parseMenuJsonc(fs.readFileSync(path.join(root, 'default/omarchy/omarchy-menu.jsonc'), 'utf8'))
+const channelMenu = defaultItems.find(item => item.id === 'update.channel')
+assert(
+  channelMenu.when === 'channel=$(omarchy-channel-current 2>/dev/null) && [[ $channel != "desktop-overlay" ]]',
+  'the package channel menu hides only for overlays or failed channel detection'
+)
 const guardText = defaultItems.map(item => `${item.when}\n${item.checked}\n${item.disabled}`).join('\n')
 const repeated = [...new Set(
   (guardText.match(/\$\((omarchy-[a-z0-9-]+)\)/g) || []).map(match => match.slice(2, -1))

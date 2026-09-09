@@ -9,6 +9,13 @@ set -euo pipefail
 usage() { echo "Usage: omarchy-channel-set [stable|rc|edge|dev]"; }
 fail() { echo "Error: $*" >&2; exit 1; }
 
+installation_type=$(omarchy-installation-type --classify-only)
+if [[ $installation_type == "desktop_overlay" ]]; then
+  fail "desktop overlays follow their checkout's maintained Git branch; package channels do not apply."
+elif [[ $installation_type != "product" ]]; then
+  fail "unsupported Omarchy installation type '$installation_type'."
+fi
+
 confirm_dev() {
   cat <<'WARNING'
 

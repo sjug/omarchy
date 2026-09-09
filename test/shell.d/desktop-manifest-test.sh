@@ -38,7 +38,7 @@ fi
 pass "desktop manifest lists each package once"
 
 # Every package must belong to a "# group: <name>" stage marker, the groups
-# must be exactly the stages omarchy-dev-setup-desktop knows, and none may be
+# must be exactly the stages omarchy-overlay-setup knows, and none may be
 # empty — the command installs by group, so an orphan or a typo'd group name
 # silently drops packages from every stage.
 expected_groups="audio capture connectivity core display-manager files power"

@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# omarchy:summary=Report desktop-overlay registration and stage state
+
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "$(realpath "${BASH_SOURCE[0]}")")" && pwd)
+exec "$script_dir/omarchy-overlay-setup" status "$@"

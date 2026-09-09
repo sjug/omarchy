@@ -1,8 +1,8 @@
 # Omarchy update process
 
-This document describes the intended update behavior now that Omarchy is
-package-backed. It covers the blessed update path plus what happens when a user attempts to
-bypass it:
+This document describes the supported product and desktop-overlay update paths. `omarchy-installation-type` selects exactly one from the root-owned descriptor at `/etc/omarchy/installation.conf`; product packages provide a compatibility fallback for systems installed before that descriptor existed. Conflicting, malformed, or unregistered checkout-only states fail closed with a targeted repair instead of guessing which updater should run.
+
+It covers the blessed update path plus what happens when a product user attempts to bypass it:
 
 1. `omarchy update` — the blessed interactive Omarchy update flow.
 2. `sudo pacman -Syu` — guarded by Omarchy and aborted with instructions unless
@@ -23,8 +23,10 @@ The design goal is:
 | --- | --- | --- |
 | `${XDG_RUNTIME_DIR:-/tmp}/omarchy-update.lock` | user | Prevent overlapping update runs. Owned by `omarchy-update-lock`; compatibility wrappers inherit/respect it. |
 | `/tmp/omarchy-update.log` | user | Transcript of `omarchy update`, used by `omarchy-update-analyze-logs`. |
+| `/etc/omarchy/installation.conf` | root | Installation type and, for a desktop overlay, its owning user and canonical stage ledger. |
 | `~/.local/state/omarchy/current/` | user | Generated active theme, selected theme name, and current background symlink. |
 | `~/.local/state/omarchy/migrations/` | user | Per-user migration markers. |
+| `~/.local/state/omarchy/desktop-overlay-migrations/` | user | Per-user baseline sentinel and markers for the independent desktop-overlay migration stream. |
 | `~/.local/state/omarchy/reboot-required` | user | Optional reboot marker checked by `omarchy-update-restart`. |
 | `~/.local/state/omarchy/restart-*-required` | user | Optional service/app restart markers checked by `omarchy-update-restart`. The shell needs no marker: it is restarted unconditionally after every update. |
 
@@ -60,7 +62,7 @@ For watchers and diagnostics, `omarchy-migrate --pending` prints pending
 migration names and exits `0` when any are pending. When no migrations are
 pending, it prints nothing and exits non-zero.
 
-## Raw pacman guard
+## Product raw pacman guard
 
 The `omarchy` package installs an ALPM pre-transaction hook alongside its guard
 binary:
@@ -115,6 +117,20 @@ omarchy-update
   ├─ ensure transcript logging through script(1) → /tmp/omarchy-update.log
   ├─ omarchy-update-lock
   │    └─ acquire the update lock and run omarchy-update inside it
+  ├─ omarchy-installation-type
+  ├─ product
+  │    ├─ omarchy-update-requires-free-space
+  │    ├─ confirmation, cache prune, and snapshot
+  │    ├─ product checkout/package update, product migrations, hooks, AUR, mise, and orphan handling
+  │    └─ log analysis, status refresh, and restart handling
+  └─ desktop_overlay
+       └─ omarchy-update-overlay
+```
+
+The product path retains this flow:
+
+```text
+omarchy-update (product)
   ├─ omarchy-update-requires-free-space
   │    ├─ abort below the configured free-space threshold on /
   │    └─ on LVM/XFS, fail closed at 80% thin-pool data or 70% metadata usage
@@ -147,6 +163,62 @@ Important behavior:
   `omarchy-migrate` after pacman finishes.
 - A failure should leave enough output in `/tmp/omarchy-update.log` and the
   terminal transcript to debug.
+
+### Desktop-overlay path
+
+A desktop overlay is a checkout-backed Omarchy desktop installed without the `omarchy`, `omarchy-dev`, `omarchy-settings`, or `omarchy-settings-dev` product packages. `omarchy overlay setup` records successful stages in `/etc/omarchy/installation.conf`; `omarchy overlay register` adopts an existing overlay only after every named stage passes its read-only probe. Adopting `display-manager` additionally requires the original active rollback transaction, so registration cannot manufacture a meaningless post-install baseline from Omarchy's own SDDM files. Artifact reconciliation requires that same transaction, and setup refuses an already-configured Omarchy greeter when its original transaction is missing. The descriptor also records the owning user, and overlay updates refuse to run as another user.
+
+An existing checkout-backed desktop can be adopted directly from its checkout before its commands are on `PATH`:
+
+```bash
+./bin/omarchy-overlay-register core link config audio files connectivity capture power lock session-entry display-manager
+```
+
+Omit any stage that is not installed, then add it later with `omarchy overlay setup <stage>...`. A stale, malformed, or obsolete product descriptor can be replaced explicitly with `./bin/omarchy-overlay-register --repair <stage>...`; repair runs the same stage probes before writing the replacement and never guesses from the old descriptor. A desktop overlay registered to another user must be managed as that user; repair does not transfer ownership or relocate their state. Migration baselining is independent of the descriptor: if the per-user `.baseline-established` sentinel is present, repair preserves pending migrations; if the sentinel and markers were removed together, repair establishes a fresh baseline before writing the descriptor.
+
+Display-manager rollback transactions remain under `~/.local/state/omarchy/dev-setup-desktop/display-manager` for compatibility with the original setup command. Each new transaction carries a versioned destination inventory. Legacy records use a frozen historical index mapping; artifact application upgrades that inventory and captures newly managed paths before modifying them. Rollback follows the recorded inventory, including retired SDDM config files, rather than the current managed-path order. Update-time artifacts preserve host autologin configuration. Explicit setup requests authenticated login and keeps any removed autologin file in an announced `autologin-preserved.*` recovery directory inside the transaction, separate from its original rollback baseline.
+
+The shared path validator permits direct `.conf` files under `/etc/sddm.conf.d/` (names beginning with a letter, digit, underscore, or hyphen, followed by those characters or dots), plus `/usr/share/sddm/hyprland.lua`, `/usr/share/sddm/themes/omarchy`, `/usr/local/share/wayland-sessions/omarchy.desktop`, and `/var/lib/sddm/state.conf`. Preflight, inventory reads, and inventory writes all enforce this scope and reject empty or duplicate path lists. Managing anything outside it requires a deliberate validator change and compatibility tests for existing transactions. Retired destinations must remain supported for rollback. Status reporting `display-manager: configured and enabled` describes the integration and service state; it does not certify that host autologin is disabled or that every login requires authentication.
+
+Enrollment does not install `/etc/profile.d/omarchy.sh`. Outside the UWSM session, use the checkout's explicit command paths, for example `~/omarchy/bin/omarchy-overlay-status` or `~/omarchy/bin/omarchy-overlay-setup`, for diagnosis and repair. The default package source is `pkgs.omarchy.org/stable`, independently of the maintained Git branch. Maintainers must qualify checkout updates against those package versions, including Quickshell, before advancing the branch used by clients.
+
+If setup finds an existing runtime link to the same checkout but no descriptor, `setup core` refuses before changing packages or writing a core-only ledger. This is the legacy checkout-desktop shape. Adopt its already-installed stages with the single `./bin/omarchy-overlay-register ...` command above, or use `omarchy overlay setup core link` when completing a genuinely partial new installation.
+
+If an invalid descriptor and missing core packages prevent those probes, run `./bin/omarchy-overlay-setup core --repair`. It restores the absent repository stanza and pinned package key, installs and verifies the core stage, preserves the invalid descriptor as a timestamped backup, and then writes a core-only overlay ledger. It never records core before its package transaction succeeds.
+
+The user-facing `omarchy dev link` and `omarchy dev unlink` commands refuse registered overlays. Overlay setup uses their shared low-level runtime-link writer so `omarchy overlay setup link` remains the supported repair for `/etc/omarchy.conf` without exposing the product development-link lifecycle.
+
+The update sequence is deliberately narrower than the product path:
+
+```text
+omarchy-update-overlay
+  ├─ ensure transcript logging and acquire the shared update lock when invoked directly
+  ├─ validate the overlay descriptor and stage ledger
+  ├─ require no tracked checkout changes, an attached branch, and a configured upstream
+  ├─ require the per-user overlay migration baseline sentinel
+  ├─ preflight every recorded static artifact against the current checkout and host state
+  ├─ free-space preflight and confirmation unless -y
+  ├─ fetch without credential prompts and with a 30-second bound; allow equal or locally-ahead history; refuse divergence
+  ├─ when behind, verify the plain overlay-dispatch marker from the upstream ref before changing HEAD
+  ├─ fast-forward and re-exec omarchy-update once from the new revision
+  ├─ omarchy-overlay-setup packages <recorded package stages>
+  │    └─ one sudo pacman -Syu --needed --noconfirm transaction using the desktop manifest
+  ├─ omarchy-overlay-setup artifacts <recorded static stages>
+  │    └─ reapply lock, session-entry, and display-manager files without another package transaction; preserve SDDM service, target, and runtime state
+  ├─ omarchy-overlay-migrate
+  ├─ omarchy-hook post-update
+  ├─ print manual omarchy refresh config commands for defaults changed by the checkout update
+  ├─ update-indicator refresh; failure warns without invalidating completed package work
+  └─ run normal restart checks
+```
+
+The overlay updater never creates a snapshot, invokes product migrations, uses the product package conflict/quarantine updater, refreshes user configuration automatically, or reapplies the `files` stage's MIME preference. It also omits the product-only sleep inhibitor, log analysis, standalone keyring bootstrap, AUR update, mise update, and orphan cleanup steps. `omarchy-keyring` belongs to the overlay core package group and is reconciled in the single system package transaction; core reconciliation first restores an absent repository stanza and pinned signing key, while leaving an existing customized stanza unchanged. Foreign AUR packages such as `brave-origin-bin` remain the user's responsibility. Package reconciliation is noninteractive after the update's single confirmation; a package conflict stops safely for manual repair rather than prompting halfway through the pipeline.
+
+If the recorded display-manager stage no longer owns the system display-manager alias or its rollback transaction is invalid, host artifact preflight stops before confirmation or checkout fetch. The error prints the exact repair command with `display-manager` omitted. Repairing that ledger changes neither the current greeter nor the stored rollback files; after the host state is repaired, `omarchy overlay setup display-manager` re-adopts the stage.
+
+The maintained overlay branch is append-only from the clients' perspective. Upstream changes are integrated centrally with signed merge commits, the maintained branch is never rebased or force-pushed, and enrolled machines consume only fast-forwards. A locally-ahead checkout remains usable. Tracked modifications, a detached branch, or divergent history must be repaired before system packages change. Untracked files are allowed because they do not alter tracked update code; if an incoming fast-forward collides with one, Git refuses the merge before package reconciliation.
+
+Changed files under `config/` are reported instead of copied because those paths are user-owned after initial setup. The update prints one `omarchy refresh config <relative-path>` command per changed default so the user can inspect and opt into each refresh.
 
 ## Path 2: direct `sudo pacman -Syu` attempt
 
@@ -225,37 +297,28 @@ The bar widget `omarchy.system-update` runs:
 omarchy-update-available
 ```
 
-`omarchy-update-available` checks the active Omarchy sources for updates:
+`omarchy-update-available` uses the same installation detector as the dispatcher and checks only the sources relevant to that type:
 
-- new upstream commits for the active dev-linked checkout
-- `omarchy-dev`, when installed
-- otherwise `omarchy`, when installed
+- desktop overlays: new upstream commits for the registered checkout only
+- product dev links: new upstream commits for the active checkout plus the installed product package
+- package-backed products: `omarchy-dev`, when installed, otherwise `omarchy`
 
-The dev check fetches the checkout's configured upstream before comparing it
-with `HEAD`. A failed fetch is quiet and falls back to the existing remote-
-tracking state.
+The checkout check fetches the configured upstream before comparing it with `HEAD`. Desktop overlays also require the same clean, attached, non-divergent state as the updater. A failed fetch is quiet and falls back to the existing remote-tracking state.
 
 Exit codes:
 
 - `0` — Omarchy updates are available; stdout is the update list.
-- non-zero — no Omarchy updates are available; stdout says Omarchy is up to date.
+- `1` — no Omarchy updates are available; stdout says Omarchy is up to date.
+- `2` — installation or checkout state is invalid or cannot be classified; the shell leaves the existing indicator unchanged.
 
 The widget runs this check on shell startup and every six hours. Clicking the
 update icon launches `omarchy-update` in a floating terminal.
 
 ## Channels and versions
 
-Updates install whatever the active channel points at. `omarchy-channel-set
-<stable|rc|edge|dev>` switches channels: the three package channels select
-which pacman repo the mirrorlist points at (and swap between the `omarchy` and
-`omarchy-dev` packages through a guard-allowed pacman run), while `dev` links
-the runtime to a git checkout via the dev-link mechanism, after which
-`omarchy update` fast-forwards that checkout instead of upgrading a package.
+Product updates install whatever the active channel points at. `omarchy-channel-set <stable|rc|edge|dev>` switches channels: the three package channels select which pacman repo the mirrorlist points at and swap between the `omarchy` and `omarchy-dev` packages through a guard-allowed pacman run, while `dev` links the product runtime to a Git checkout. Desktop overlays do not have a package channel; they follow the maintained upstream branch configured on their checkout, channel changes are refused before any system mutation, and the product channel submenu is hidden for them. The submenu remains available on a successfully classified product even when a custom mirror makes its current channel `unknown`, so it can be used to return to a supported channel; detector failures still hide it.
 
-There is no version file at runtime. `omarchy-version` derives the version from
-`pacman -Q` on whichever package is installed, or reports `dev (<hash>)` for a
-linked checkout, and `omarchy-version-channel` sniffs the mirrorlist and
-pacman.conf to answer which channel is active.
+There is no version file at runtime. `omarchy-version` derives a product version from `pacman -Q`, reports `dev (<hash>)` for a product dev link or an unregistered checkout during its adoption window, and reports `desktop overlay (<hash>)` for an overlay. `omarchy-version-channel` reports `desktop-overlay` for an overlay, `dev` for an unregistered checkout, and otherwise derives the product package channel from the mirrorlist and `pacman.conf`. These read-only labels validate the installation classification but do not require the current user to own the overlay ledger; ownership remains mandatory for setup, migration, and updates.
 
 ## Update-related binaries
 
@@ -265,7 +328,11 @@ scripts.
 
 | Binary | Current purpose | Keep? / Question |
 | --- | --- | --- |
-| `omarchy-update` | Public user command. Adds transcript logging, confirmation, snapshot, and restart checks around the locked, sleep-inhibited update pipeline. | **Keep.** This is the blessed entry point and orchestrates the update pipeline. |
+| `omarchy-update` | Public user command. Adds transcript logging and locking, then dispatches to the product or desktop-overlay pipeline. | **Keep.** This is the blessed entry point and preserves the product's confirmation, snapshot, and restart behavior. |
+| `omarchy-installation-type` | Read-only installation detector used by update, indicator, version, channel, and checkout commands. | **Keep internal/hidden.** It is the single fail-closed dispatcher boundary. |
+| `omarchy-update-overlay` | Stage-aware update pipeline for registered desktop overlays. | **Keep internal/hidden.** It owns checkout fast-forward/re-exec and deliberately excludes product-only steps. |
+| `omarchy-overlay-setup` | Public staged installer and reconciler for checkout-backed desktops. | **Keep.** Its manifest groups and root-owned ledger are the overlay package source of truth. |
+| `omarchy-overlay-migrate` | Public runner for the separate desktop-overlay migration namespace. | **Keep.** Product and overlay migrations must never share markers or assumptions. |
 | `omarchy-update-lock` | Hidden command wrapper that holds the per-user update lock while its child runs. | **Keep internal/hidden.** Isolates update concurrency and lock descriptor handling. |
 | `omarchy-update-stay-awake` | Hidden helper that starts or stops update-owned sleep and idle inhibition, restoring only the state it changed. | **Keep internal/hidden.** Keeps inhibitor ownership and cleanup together. |
 | `omarchy-update-status` | Hidden helper that refreshes or clears the shell update indicator after rechecking available updates. | **Keep internal/hidden.** Keeps shell status synchronization out of the main pipeline. |
@@ -303,13 +370,13 @@ scripts.
    - `omarchy-update-user-notify` remains only as a hidden compatibility wrapper.
 
 3. **Update pipeline ownership**
-   - `omarchy-update` owns the full update pipeline now.
+   - `omarchy-update` owns installation-type detection, transcript logging, locking, and dispatch. Each installation type owns its explicit pipeline after dispatch.
 
-4. **Mise remains in the blessed update path**
-   - `omarchy-update-mise` intentionally runs as part of `omarchy update`.
+4. **Mise remains in the product update path**
+   - `omarchy-update-mise` intentionally runs for product installations. Desktop overlays do not install or update mise.
 
-5. **Orphan cleanup stays in the update path for now**
-   - It is prompt-only and never removes packages noninteractively.
+5. **Orphan cleanup stays in the product update path for now**
+   - It is prompt-only and never removes packages noninteractively. Desktop overlays leave host package cleanup to the user.
 
 6. **Direct pacman user follow-up is based on actual migration state**
    - Direct `sudo pacman -Syu` no longer uses a fake user-update marker.

@@ -16,7 +16,15 @@ cat >"$stub_bin/omarchy-notification-dismiss" <<'SH'
 #!/bin/bash
 printf '%s\n' "$1" >>"$TEST_DISMISSALS"
 SH
+cat >"$stub_bin/omarchy-installation-type" <<'SH'
+#!/bin/bash
+if [[ ${TEST_REQUIRE_CLASSIFY_ONLY:-0} == "1" && ${1:-} != "--classify-only" ]]; then
+  exit 72
+fi
+echo "${TEST_INSTALLATION_TYPE:-product}"
+SH
 chmod +x "$stub_bin/omarchy-notification-dismiss"
+chmod +x "$stub_bin/omarchy-installation-type"
 
 cat >"$test_root/migrations/100-migration.sh" <<'SH'
 echo migration >>"$TEST_CALLS"
@@ -56,3 +64,12 @@ if run_migrate --force >"$test_tmp/force.out" 2>&1; then
 fi
 grep -q 'Unknown option: --force' "$test_tmp/force.out" || fail "omarchy-migrate reports obsolete --force option"
 pass "omarchy-migrate no longer needs --force"
+
+rm -rf "$test_home/.local/state/omarchy/migrations"
+if TEST_INSTALLATION_TYPE=desktop_overlay TEST_REQUIRE_CLASSIFY_ONLY=1 run_migrate >"$test_tmp/overlay.out" 2>"$test_tmp/overlay.err"; then
+  fail "the product migration runner accepts a desktop overlay"
+fi
+grep -q "run 'omarchy overlay migrate' instead" "$test_tmp/overlay.err" ||
+  fail "the product migration refusal does not name the overlay-safe runner" "$(<"$test_tmp/overlay.err")"
+[[ ! -e $test_home/.local/state/omarchy/migrations ]] || fail "a refused overlay run creates product migration state"
+pass "desktop overlays cannot enter the product migration stream"

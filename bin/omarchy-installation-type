@@ -1,0 +1,152 @@
+#!/bin/bash
+
+# omarchy:summary=Detect the supported Omarchy installation type
+# omarchy:hidden=true
+
+set -euo pipefail
+
+classify_only=0
+if [[ ${1:-} == "--classify-only" ]]; then
+  classify_only=1
+  shift
+fi
+if (($#)); then
+  echo "Usage: omarchy-installation-type [--classify-only]" >&2
+  exit 1
+fi
+
+installation_conf="${OMARCHY_INSTALLATION_CONF_PATH:-/etc/omarchy/installation.conf}"
+runtime_conf="${OMARCHY_RUNTIME_CONF_PATH:-/etc/omarchy.conf}"
+product_packages=(omarchy omarchy-dev)
+product_companion_packages=(omarchy-settings omarchy-settings-dev)
+
+# pacman still prints installed matches when other requested packages are absent.
+# Query once and preserve the product-before-companion priority below.
+mapfile -t installed_packages < <(pacman -Qq "${product_packages[@]}" "${product_companion_packages[@]}" 2>/dev/null || true)
+
+installed_package_from() {
+  local package installed
+
+  for package in "$@"; do
+    for installed in "${installed_packages[@]}"; do
+      if [[ $installed == "$package" ]]; then
+        printf '%s\n' "$package"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+descriptor_value() {
+  local key="$1"
+  local -a values=()
+
+  mapfile -t values < <(sed -n -E "s/^[[:space:]]*${key}=([^[:space:]#]+)[[:space:]]*(#.*)?$/\\1/p" "$installation_conf")
+  (( ${#values[@]} == 1 )) || return 1
+  printf '%s\n' "${values[0]}"
+}
+
+descriptor_repair_hint() {
+  echo "Repair it from the checkout with './bin/omarchy-overlay-register --repair <stage>...' after verifying the installed stages." >&2
+}
+
+configured_runtime_checkout() {
+  local OMARCHY_PATH=""
+
+  [[ -f $runtime_conf && -r $runtime_conf ]] || return 1
+  # shellcheck source=/dev/null
+  . "$runtime_conf" 2>/dev/null || true
+  printf '%s' "$OMARCHY_PATH"
+}
+
+if [[ -e $installation_conf ]]; then
+  if [[ ! -f $installation_conf || ! -r $installation_conf ]]; then
+    echo "Error: Omarchy installation descriptor is not a readable regular file: $installation_conf" >&2
+    descriptor_repair_hint
+    exit 1
+  fi
+
+  if ! installation=$(descriptor_value OMARCHY_INSTALLATION); then
+    echo "Error: $installation_conf must contain exactly one valid OMARCHY_INSTALLATION assignment." >&2
+    descriptor_repair_hint
+    exit 1
+  fi
+
+  case "$installation" in
+    product)
+      if installed_package_from "${product_packages[@]}" >/dev/null; then
+        echo product
+      else
+        echo "Error: $installation_conf declares a product install, but neither omarchy nor omarchy-dev is installed." >&2
+        echo "Restore the product package, or correct the descriptor before updating." >&2
+        descriptor_repair_hint
+        exit 1
+      fi
+      ;;
+    desktop_overlay)
+      if package=$(installed_package_from "${product_packages[@]}" "${product_companion_packages[@]}"); then
+        echo "Error: $installation_conf declares a desktop overlay, but product package $package is installed." >&2
+        echo "Remove the conflicting installation state before updating; no update path was selected." >&2
+        exit 1
+      fi
+      if ! stage_csv=$(descriptor_value OMARCHY_DESKTOP_STAGES); then
+        echo "Error: $installation_conf must contain exactly one valid OMARCHY_DESKTOP_STAGES assignment." >&2
+        descriptor_repair_hint
+        exit 1
+      fi
+      if (( ! classify_only )) && [[ ,$stage_csv, == *,link,* ]]; then
+        configured_checkout=$(configured_runtime_checkout || true)
+        if [[ -z $configured_checkout ]]; then
+          echo "Error: a desktop overlay with the link stage requires a readable checkout path in $runtime_conf." >&2
+          exit 1
+        fi
+        if [[ -z ${OMARCHY_PATH:-} ]]; then
+          echo "Error: OMARCHY_PATH is unset; start a configured Omarchy session before using the desktop overlay." >&2
+          exit 1
+        fi
+        if [[ $(realpath -m "$configured_checkout") != "$(realpath -m "$OMARCHY_PATH")" ]]; then
+          echo "Error: the active OMARCHY_PATH '$OMARCHY_PATH' does not match the desktop-overlay checkout '$configured_checkout'." >&2
+          echo "Start a fresh session or repair $runtime_conf before updating." >&2
+          exit 1
+        fi
+      fi
+      echo desktop_overlay
+      ;;
+    *)
+      echo "Error: unsupported OMARCHY_INSTALLATION value '$installation' in $installation_conf." >&2
+      descriptor_repair_hint
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+
+# Compatibility for product systems installed before installation.conf existed.
+if installed_package_from "${product_packages[@]}" >/dev/null; then
+  echo product
+  exit 0
+fi
+
+if package=$(installed_package_from "${product_companion_packages[@]}"); then
+  echo "Error: $package is installed without the omarchy or omarchy-dev product package." >&2
+  echo "Restore the product package before updating." >&2
+  exit 1
+fi
+
+if [[ ${OMARCHY_PATH:-/usr/share/omarchy} != "/usr/share/omarchy" || -f $runtime_conf ]]; then
+  if (( classify_only )); then
+    echo checkout_unregistered
+    exit 0
+  fi
+  echo "Error: this checkout-backed Omarchy desktop has not been registered as a supported overlay." >&2
+  echo "From its checkout, adopt a complete existing desktop with:" >&2
+  echo "  ./bin/omarchy-overlay-register core link config audio files connectivity capture power lock session-entry display-manager" >&2
+  echo "After registration, use 'omarchy overlay register' and 'omarchy overlay setup' through the normal command router." >&2
+  echo "Omit stages that are not installed, then add them with 'omarchy overlay setup <stage>...'." >&2
+  echo "For a pre-4.0 product checkout, run 'omarchy upgrade to-quattro' instead." >&2
+else
+  echo "Error: no supported Omarchy installation was detected." >&2
+  echo "Install the Omarchy product, or register an existing desktop overlay." >&2
+fi
+exit 1

@@ -2,8 +2,41 @@
 
 # omarchy:summary=Print the installed Omarchy version
 
+installation_type=$(omarchy-installation-type --classify-only)
+
+if [[ $installation_type == "desktop_overlay" || $installation_type == "checkout_unregistered" ]] && [[ -z ${OMARCHY_PATH:-} ]]; then
+  runtime_conf="${OMARCHY_RUNTIME_CONF_PATH:-/etc/omarchy.conf}"
+  if [[ -r $runtime_conf ]]; then
+    # Read-only version reporting also runs outside UWSM, where the runtime
+    # invariant has not populated OMARCHY_PATH. The root-owned runtime link is
+    # the registered checkout source for this narrow diagnostic exception.
+    # shellcheck source=/dev/null
+    . "$runtime_conf"
+  fi
+fi
+
 omarchy_path=${OMARCHY_PATH:-/usr/share/omarchy}
 omarchy_path=${omarchy_path%/}
+
+if [[ $installation_type == "desktop_overlay" ]]; then
+  hash=$(git -C "$omarchy_path" rev-parse --short HEAD 2>/dev/null || true)
+  if [[ -n $hash ]]; then
+    echo "desktop overlay ($hash)"
+  else
+    echo "desktop overlay"
+  fi
+  exit 0
+elif [[ $installation_type == "checkout_unregistered" ]]; then
+  hash=$(git -C "$omarchy_path" rev-parse --short HEAD 2>/dev/null || true)
+  if [[ -n $hash ]]; then
+    echo "dev ($hash)"
+  else
+    echo dev
+  fi
+  exit 0
+elif [[ $installation_type != "product" ]]; then
+  exit 1
+fi
 
 if [[ $omarchy_path != "/usr/share/omarchy" ]]; then
   hash=$(git -C "$omarchy_path" rev-parse --short HEAD 2>/dev/null || true)

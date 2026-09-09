@@ -1,4 +1,4 @@
-# Desktop-only package set installed by omarchy-dev-setup-desktop for
+# Desktop-only package set installed by omarchy-overlay-setup for
 # checkout-backed installs on Arch systems Omarchy did not install.
 #
 # The desktop packages are a strict subset of the product package set
@@ -9,7 +9,7 @@
 # display-manager group is a named opt-in and is not included by "all".
 #
 # "# group: <name>" markers split the set into the stages
-# omarchy-dev-setup-desktop installs independently.
+# omarchy-overlay-setup installs independently.
 # test/shell.d/desktop-manifest-test.sh enforces all of these properties.
 
 # group: core

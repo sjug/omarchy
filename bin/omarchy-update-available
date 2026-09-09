@@ -5,34 +5,77 @@
 set -euo pipefail
 
 updates=()
+installation_type=$(omarchy-installation-type) || exit 2
+omarchy_path=${OMARCHY_PATH:-/usr/share/omarchy}
 
-if [[ $OMARCHY_PATH != "/usr/share/omarchy" ]]; then
-  upstream=$(git -C "$OMARCHY_PATH" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+if [[ $installation_type == "desktop_overlay" ]]; then
+  omarchy-overlay-stages >/dev/null || exit 2
+  if [[ -z ${OMARCHY_PATH:-} || $omarchy_path == "/usr/share/omarchy" ]]; then
+    echo "Error: desktop overlay is not running from its registered checkout." >&2
+    exit 2
+  fi
+  git -C "$omarchy_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+    echo "Error: desktop-overlay path is not a Git checkout: $omarchy_path" >&2
+    exit 2
+  }
+  if [[ -n $(git -C "$omarchy_path" status --porcelain --untracked-files=no) ]]; then
+    echo "Error: desktop-overlay checkout has tracked changes: $omarchy_path" >&2
+    exit 2
+  fi
+  branch=$(git -C "$omarchy_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  if [[ -z $branch ]]; then
+    echo "Error: desktop-overlay checkout has a detached HEAD: $omarchy_path" >&2
+    exit 2
+  fi
+fi
+
+if [[ $omarchy_path != "/usr/share/omarchy" ]]; then
+  upstream=$(git -C "$omarchy_path" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+  if [[ -z $upstream && $installation_type == "desktop_overlay" ]]; then
+    echo "Error: desktop-overlay checkout has no configured upstream: $omarchy_path" >&2
+    exit 2
+  fi
   if [[ -n $upstream ]]; then
-    GIT_TERMINAL_PROMPT=0 timeout 10 git -C "$OMARCHY_PATH" fetch --quiet 2>/dev/null || true
+    GIT_TERMINAL_PROMPT=0 timeout 10 git -C "$omarchy_path" fetch --quiet 2>/dev/null || true
 
-    behind=$(git -C "$OMARCHY_PATH" rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)
+    behind=$(git -C "$omarchy_path" rev-list --count "HEAD..$upstream" 2>/dev/null || echo 0)
+    if [[ $installation_type == "desktop_overlay" ]]; then
+      ahead=$(git -C "$omarchy_path" rev-list --count "$upstream..HEAD" 2>/dev/null || echo 0)
+      if (( ahead > 0 && behind > 0 )); then
+        echo "Error: desktop-overlay checkout has diverged from $upstream." >&2
+        exit 2
+      fi
+    fi
     if (( behind > 0 )); then
       commit_label=commits
       (( behind == 1 )) && commit_label=commit
-      updates+=("omarchy-dev-checkout $behind new $commit_label on $upstream")
+      if [[ $installation_type == "desktop_overlay" ]]; then
+        updates+=("omarchy-desktop-overlay $behind new $commit_label on $upstream")
+      else
+        updates+=("omarchy-dev-checkout $behind new $commit_label on $upstream")
+      fi
     fi
   fi
 fi
 
-package=""
-if pacman -Qq omarchy-dev >/dev/null 2>&1; then
-  package=omarchy-dev
-elif pacman -Qq omarchy >/dev/null 2>&1; then
-  package=omarchy
-fi
+if [[ $installation_type == "product" ]]; then
+  package=""
+  if pacman -Qq omarchy-dev >/dev/null 2>&1; then
+    package=omarchy-dev
+  elif pacman -Qq omarchy >/dev/null 2>&1; then
+    package=omarchy
+  fi
 
-if [[ -n $package ]]; then
-  update=$(checkupdates --nocolor 2>/dev/null | awk -v package="$package" '$1 == package { print; exit }' || true)
-fi
+  if [[ -n $package ]]; then
+    update=$(checkupdates --nocolor 2>/dev/null | awk -v package="$package" '$1 == package { print; exit }' || true)
+  fi
 
-if [[ -n ${update:-} ]]; then
-  updates+=("$update")
+  if [[ -n ${update:-} ]]; then
+    updates+=("$update")
+  fi
+elif [[ $installation_type != "desktop_overlay" ]]; then
+  echo "Error: unsupported Omarchy installation type '$installation_type'." >&2
+  exit 2
 fi
 
 if (( ${#updates[@]} > 0 )); then

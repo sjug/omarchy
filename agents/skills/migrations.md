@@ -165,3 +165,13 @@ omarchy-migrate
 Omarchy 4.0 is upgraded through `bin/omarchy-upgrade-to-quattro`, not through the
 normal migration runner. Do not add compatibility migrations for old installer
 layouts; put pre-4 package-layout transition work in the upgrade command instead.
+
+## Desktop-overlay migrations
+
+A checkout-backed desktop overlay does not install the Omarchy product packages and must not run the product migration stream. Its migrations live in `migrations/desktop-overlay/*.sh`, run through `omarchy-overlay-migrate`, and record completion per user under `~/.local/state/omarchy/desktop-overlay-migrations/`.
+
+When a product migration changes desktop state that an overlay also owns, either extract the common idempotent repair into a helper called by both migration streams or add an overlay migration with the equivalent overlay-safe behavior. Never make the two runners share marker files: a product migration completing does not prove that its overlay counterpart ran, and an overlay machine does not satisfy the system assumptions made by many product migrations.
+
+Overlay migrations follow the same file mode, no-shebang, idempotence, privilege, and testing rules described above. They must stay within the ownership boundary documented in `docs/update-process.md`: no bootloader, initramfs, storage, disk-security, product-package, or product-migration changes.
+
+The overlay migration state directory contains a `.baseline-established` sentinel alongside its per-migration markers. Whenever setup or registration finds that sentinel absent, it marks every overlay migration in the current checkout complete and then writes the sentinel. The sentinel alone decides whether a baseline is needed: descriptor presence and repair mode do not. This means wiping the per-user migration state causes the next explicit setup or registration repair to establish a fresh baseline instead of replaying every historical migration. Only migrations added after the established baseline are pending.

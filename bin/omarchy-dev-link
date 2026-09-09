@@ -7,21 +7,14 @@
 
 set -euo pipefail
 
+script_dir=$(cd -- "$(dirname -- "$(realpath "${BASH_SOURCE[0]}")")" && pwd)
+
 if (( EUID == 0 )); then
   echo "Error: run omarchy-dev-link as your user, not under sudo." >&2
   exit 1
 fi
 
 prompt_reboot=1
-
-# sudo resolves a bare command name against secure_path, never the caller's
-# PATH, so a dev-linked checkout is invisible to `sudo omarchy-*`: a command the
-# package does not ship yet fails outright, and one it does ship silently runs
-# the packaged copy while every unprivileged call runs the checkout. Prepending
-# the checkout's bin keeps root on the code being edited — the same trust the
-# link already extends to every system script Omarchy runs out of $OMARCHY_PATH.
-sudoers_file="/etc/sudoers.d/omarchy-dev-path"
-system_secure_path="/usr/local/sbin:/usr/local/bin:/usr/bin"
 
 if (( $# < 1 || $# > 3 )) || [[ $1 == "-h" || $1 == "--help" ]]; then
   cat <<USAGE
@@ -37,7 +30,7 @@ themes/, applications/, config/. Files installed at fixed system paths
 creation, /usr/share/plymouth) are NOT covered — for those, use
 omarchy-dev-pkg-test to build and install the package from the checkout.
 
-Also writes $sudoers_file so sudo resolves omarchy-*
+Also writes /etc/sudoers.d/omarchy-dev-path so sudo resolves omarchy-*
 from the checkout instead of the packaged copies. That part takes effect
 immediately, no reboot needed.
 
@@ -45,7 +38,7 @@ Use --no-reboot when another command will handle the reboot prompt.
 
 Use --no-sudo-path to remove or omit the sudoers drop-in: the checkout's bin/
 is user-writable, so putting it on root's secure_path is a trust grant fit for
-a development machine, not a production desktop. omarchy-dev-setup-desktop
+a development machine, not a production desktop. omarchy-overlay-setup
 links with this flag; omarchy commands still escalate internally, only a
 literal \`sudo omarchy-<cmd>\` stops resolving from the checkout.
 USAGE
@@ -68,24 +61,15 @@ while (($#)); do
   fi
 done
 
-omarchy_conf_quote() {
-  local value="$1"
-  value=${value//\\/\\\\}
-  value=${value//\"/\\\"}
-  value=${value//\$/\\\$}
-  value=${value//\`/\\\`}
-  printf '"%s"' "$value"
-}
-
-# A double-quoted sudoers string takes a backslash escape for a literal
-# backslash or quote, and nothing else — a checkout path with a space in it is
-# already covered by the quotes.
-sudoers_quote() {
-  local value="$1"
-  value=${value//\\/\\\\}
-  value=${value//\"/\\\"}
-  printf '"%s"' "$value"
-}
+if ! installation_type=$("$script_dir/omarchy-installation-type" --classify-only); then
+  echo "Error: refusing to change the Omarchy runtime link while installation state is invalid." >&2
+  exit 1
+fi
+if [[ $installation_type == "desktop_overlay" ]]; then
+  echo "Error: omarchy dev link cannot change a registered desktop overlay." >&2
+  echo "Use 'omarchy overlay setup link' to repair its checkout link." >&2
+  exit 1
+fi
 
 target=$(realpath -e "$target_arg" 2>/dev/null) || {
   echo "Error: path does not exist: $target_arg" >&2
@@ -98,39 +82,11 @@ for required in bin default shell; do
   fi
 done
 
-if (( install_sudo_path )); then
-  # Staged and parsed before anything is installed: a sudoers file sudo refuses to
-  # read takes every rule after it down with it, including the %wheel grant, and
-  # the password prompt needed to undo that is on the other side of the breakage.
-  staged_sudoers=$(mktemp)
-  trap 'rm -f "$staged_sudoers"' EXIT
-
-  {
-    printf 'Defaults secure_path='
-    sudoers_quote "$target/bin:$system_secure_path"
-    printf '\n'
-  } >"$staged_sudoers"
-
-  if ! visudo -cf "$staged_sudoers" >/dev/null; then
-    echo "Error: refusing to install an invalid $sudoers_file for $target" >&2
-    exit 1
-  fi
-fi
-
-{
-  printf 'export OMARCHY_PATH='
-  omarchy_conf_quote "$target"
-  printf '\n'
-} | sudo tee /etc/omarchy.conf >/dev/null
-
-echo "Pointed Omarchy at $target"
-if (( install_sudo_path )); then
-  sudo install -Dm440 -o root -g root "$staged_sudoers" "$sudoers_file"
-  echo "sudo now resolves omarchy-* from $target/bin"
-else
-  sudo rm -f "$sudoers_file"
-  echo "sudo secure_path does not include the checkout"
-fi
+# Product commands live in /usr/bin while shared helpers live in the runtime
+# tree. A dev-linked product resolves both from its active checkout.
+# shellcheck source=../install/helpers/runtime-link.sh
+source "$OMARCHY_PATH/install/helpers/runtime-link.sh"
+omarchy_write_runtime_link "$target" "$install_sudo_path"
 echo
 
 if (( prompt_reboot )) && gum confirm "Reboot now to activate?"; then

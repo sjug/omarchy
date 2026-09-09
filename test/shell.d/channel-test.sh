@@ -77,6 +77,13 @@ write_stub omarchy-version-channel '#!/bin/bash
 printf "%s\n" "${OMARCHY_TEST_VERSION_CHANNEL:-unknown}"
 '
 
+write_stub omarchy-installation-type '#!/bin/bash
+if [[ ${OMARCHY_TEST_REQUIRE_CLASSIFY_ONLY:-0} == "1" && ${1:-} != "--classify-only" ]]; then
+  exit 72
+fi
+printf "%s\n" "${OMARCHY_TEST_INSTALLATION_TYPE:-product}"
+'
+
 write_stub pacman '#!/bin/bash
 [[ $1 == "-Q" ]] || exit 1
 shift
@@ -95,6 +102,14 @@ run_channel() {
     PATH="$stub_bin:$ROOT/bin:$PATH" \
     "$ROOT/bin/omarchy-channel-set" "$@"
 }
+
+if OMARCHY_TEST_INSTALLATION_TYPE=desktop_overlay OMARCHY_TEST_REQUIRE_CLASSIFY_ONLY=1 run_channel stable >"$test_tmp/overlay.out" 2>"$test_tmp/overlay.err"; then
+  fail "desktop overlay accepts a product package channel"
+fi
+grep -q "desktop overlays follow their checkout's maintained Git branch" "$test_tmp/overlay.err" ||
+  fail "desktop overlay channel refusal explains its Git policy" "$(<"$test_tmp/overlay.err")"
+[[ ! -s $log_file ]] || fail "desktop overlay channel refusal happens before any system change" "$(<"$log_file")"
+pass "package channel changes refuse desktop overlays before modifying the system"
 
 assert_log_line() {
   local expected="$1"
@@ -183,5 +198,16 @@ pass "current channel detects rc"
 [[ $(current_channel edge dev /usr/share/omarchy) == "edge" ]] || fail "current channel detects package-backed edge"
 pass "current channel detects package-backed edge"
 
+[[ $(current_channel unknown stable /usr/share/omarchy) == "unknown" ]] || fail "current channel rejects a product with a custom mirror"
+pass "current channel keeps custom-mirror products classified for channel repair"
+
 [[ $(current_channel edge dev "$test_tmp/dev-checkout") == "dev" ]] || fail "current channel detects dev from OMARCHY_PATH"
 pass "current channel honors a dev link outside ~/omarchy"
+
+overlay_channel=$(OMARCHY_TEST_INSTALLATION_TYPE=desktop_overlay current_channel edge dev "$test_tmp/dev-checkout")
+[[ $overlay_channel == "desktop-overlay" ]] || fail "current channel mislabels a desktop overlay as a product dev link" "$overlay_channel"
+pass "current channel identifies overlays independently of product channels"
+
+unregistered_channel=$(OMARCHY_TEST_INSTALLATION_TYPE=checkout_unregistered current_channel unknown "" "$test_tmp/dev-checkout")
+[[ $unregistered_channel == "dev" ]] || fail "unregistered checkout loses the read-only dev-channel fallback" "$unregistered_channel"
+pass "unregistered checkout keeps the read-only dev-channel fallback"

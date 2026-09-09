@@ -4,6 +4,15 @@
 
 set -euo pipefail
 
+installation_type=$(omarchy-installation-type --classify-only)
+if [[ $installation_type == "desktop_overlay" ]]; then
+  echo "Error: desktop overlays update their checkout through 'omarchy update'." >&2
+  exit 1
+elif [[ $installation_type != "product" ]]; then
+  echo "Error: unsupported Omarchy installation type '$installation_type'." >&2
+  exit 1
+fi
+
 [[ $OMARCHY_PATH != "/usr/share/omarchy" ]] || exit 0
 
 if ! git -C "$OMARCHY_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

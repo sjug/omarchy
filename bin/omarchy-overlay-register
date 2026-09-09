@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# omarchy:summary=Register an existing checkout-backed desktop overlay
+# omarchy:args=[--repair] <stage>...
+# omarchy:examples=omarchy overlay register core link config audio files connectivity capture power lock session-entry display-manager
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "$(realpath "${BASH_SOURCE[0]}")")" && pwd)
+exec "$script_dir/omarchy-overlay-setup" register "$@"

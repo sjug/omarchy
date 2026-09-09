@@ -1,0 +1,164 @@
+#!/bin/bash
+
+# omarchy:summary=Update a registered checkout-backed desktop overlay
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+if [[ -z ${OMARCHY_UPDATE_LOGGED:-} ]]; then
+  script_command=$(printf '%q ' "$0" "$@")
+  exec env OMARCHY_UPDATE_LOGGED=1 script -qefc "$script_command" "/tmp/omarchy-update.log"
+fi
+
+if ! omarchy-update-lock held; then
+  exec omarchy-update-lock run "$0" "$@"
+fi
+
+fail() {
+  echo "Error: $*" >&2
+  exit 1
+}
+
+trap 'echo ""; echo -e "\033[0;31mSomething went wrong during the desktop-overlay update!\n\nReview the output above, correct the error, and retry the update.\033[0m"' ERR
+
+# Descriptor and stage validation comes first. Everything needed for host
+# artifact preflight is derived before the checkout or packages can change.
+[[ $(omarchy-installation-type) == "desktop_overlay" ]] || fail "desktop-overlay update selected for a non-overlay installation."
+if ! stages_output=$(omarchy-overlay-stages); then
+  fail "cannot read the registered desktop-overlay stages."
+fi
+mapfile -t recorded_stages <<<"$stages_output"
+package_stages=()
+artifact_stages=()
+
+recorded_stage() {
+  local wanted="$1" stage
+  for stage in "${recorded_stages[@]}"; do
+    [[ $stage == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+for stage in "${recorded_stages[@]}"; do
+  case "$stage" in
+    core|audio|files|connectivity|capture|power|display-manager)
+      package_stages+=("$stage")
+      ;;
+  esac
+done
+
+if recorded_stage lock; then
+  artifact_stages+=(lock)
+fi
+if recorded_stage display-manager; then
+  artifact_stages+=(display-manager)
+elif recorded_stage session-entry; then
+  artifact_stages+=(session-entry)
+fi
+
+repair_command="omarchy overlay register --repair"
+for stage in "${recorded_stages[@]}"; do
+  repair_command+=" $stage"
+done
+
+# Git validation precedes host artifact checks and confirmation, so a user is
+# never asked to approve an update that the current checkout cannot perform.
+omarchy_path=${OMARCHY_PATH:-}
+[[ -n $omarchy_path ]] || fail "OMARCHY_PATH is unset; run the link stage and start a fresh Omarchy session before updating."
+[[ $omarchy_path != "/usr/share/omarchy" ]] || fail "a desktop overlay must run from its registered checkout."
+git -C "$omarchy_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "OMARCHY_PATH is not a Git checkout: $omarchy_path"
+[[ -z $(git -C "$omarchy_path" status --porcelain --untracked-files=no) ]] || fail "the Omarchy checkout has tracked changes; commit or stash them before updating."
+
+branch=$(git -C "$omarchy_path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+[[ -n $branch ]] || fail "the Omarchy checkout has a detached HEAD; switch to its maintained branch before updating."
+upstream=$(git -C "$omarchy_path" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+[[ -n $upstream ]] || fail "branch '$branch' has no configured upstream; set one before updating."
+
+migration_state_dir="${OMARCHY_OVERLAY_MIGRATION_STATE:-$HOME/.local/state/omarchy/desktop-overlay-migrations}"
+if [[ ! -f $migration_state_dir/.baseline-established ]]; then
+  fail "the desktop-overlay migration baseline is missing; run '$repair_command' before updating."
+fi
+
+# A stale managed artifact, especially a display manager the user deliberately
+# switched away from, must fail before confirmation and before the checkout is
+# fast-forwarded. The re-executed updater repeats this against the new sources.
+if (( ${#artifact_stages[@]} > 0 )); then
+  omarchy-overlay-setup artifacts --check "${artifact_stages[@]}"
+fi
+
+if [[ ${OMARCHY_OVERLAY_UPDATE_REEXECUTED:-0} != "1" ]]; then
+  omarchy-update-requires-free-space
+
+  if [[ ${1:-} == "-y" ]]; then
+    export OMARCHY_UPDATE_UNATTENDED=1
+  elif ! omarchy-update-confirm; then
+    exit 0
+  fi
+
+  old_head=$(git -C "$omarchy_path" rev-parse HEAD)
+  echo -e "\e[32m\nUpdate Omarchy desktop-overlay checkout ($branch from $upstream)\e[0m"
+  # Apply BatchMode to OpenSSH without overriding a configured transport helper.
+  # Other transports remain bounded by timeout and Git's prompt suppression.
+  ssh_variant=${GIT_SSH_VARIANT:-$(git -C "$omarchy_path" config --get ssh.variant || true)}
+  ssh_command=${GIT_SSH_COMMAND:-$(git -C "$omarchy_path" config --get core.sshCommand || true)}
+  if [[ -z $ssh_variant || $ssh_variant == "ssh" ]] && [[ -n $ssh_command || -z ${GIT_SSH:-} ]]; then
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${ssh_command:-ssh} -o BatchMode=yes" timeout 30 git -C "$omarchy_path" fetch
+  else
+    GIT_TERMINAL_PROMPT=0 timeout 30 git -C "$omarchy_path" fetch
+  fi
+  counts=$(git -C "$omarchy_path" rev-list --left-right --count "HEAD...$upstream")
+  read -r ahead behind <<<"$counts"
+  if (( ahead > 0 && behind > 0 )); then
+    fail "branch '$branch' has diverged from '$upstream'; reconcile it centrally before updating this machine."
+  fi
+  if (( behind > 0 )); then
+    if ! git -C "$omarchy_path" show "${upstream}:bin/omarchy-update" | grep -Fqx '# Desktop-overlay update dispatch is supported.'; then
+      fail "the upstream checkout does not support desktop-overlay update dispatch; refusing to fast-forward into the product update path."
+    fi
+    git -C "$omarchy_path" merge --ff-only "$upstream"
+    exec env \
+      OMARCHY_OVERLAY_UPDATE_REEXECUTED=1 \
+      OMARCHY_OVERLAY_UPDATE_OLD_HEAD="$old_head" \
+      "$omarchy_path/bin/omarchy-update" "$@"
+  fi
+else
+  [[ -n ${OMARCHY_OVERLAY_UPDATE_OLD_HEAD:-} ]] || fail "overlay update re-exec is missing its previous checkout revision."
+  old_head="$OMARCHY_OVERLAY_UPDATE_OLD_HEAD"
+fi
+
+current_head=$(git -C "$omarchy_path" rev-parse HEAD)
+
+if (( ${#package_stages[@]} > 0 )); then
+  echo -e "\e[32m\nReconcile desktop-overlay packages\e[0m"
+  omarchy-overlay-setup packages "${package_stages[@]}"
+fi
+
+# Only checkout-owned static system files are reconciled automatically. User
+# configs and the files stage's MIME preference remain under user control.
+if (( ${#artifact_stages[@]} > 0 )); then
+  omarchy-overlay-setup artifacts "${artifact_stages[@]}"
+fi
+
+omarchy-overlay-migrate
+omarchy-hook post-update
+
+if [[ $old_head != "$current_head" ]] && git -C "$omarchy_path" merge-base --is-ancestor "$old_head" "$current_head"; then
+  mapfile -t changed_configs < <(git -C "$omarchy_path" diff --name-only --diff-filter=ACMRTUXB "$old_head..$current_head" -- config/)
+  mapfile -t removed_configs < <(git -C "$omarchy_path" diff --name-only --diff-filter=D "$old_head..$current_head" -- config/)
+  if (( ${#changed_configs[@]} > 0 )); then
+    echo -e "\e[33m\nDesktop defaults changed; review and refresh only the user configs you want:\e[0m"
+    for config_path in "${changed_configs[@]}"; do
+      printf '  omarchy refresh config %q\n' "${config_path#config/}"
+    done
+  fi
+  if (( ${#removed_configs[@]} > 0 )); then
+    echo -e "\e[33m\nDesktop defaults were removed upstream; review any corresponding user-owned files:\e[0m"
+    printf '  %s\n' "${removed_configs[@]}"
+  fi
+fi
+
+if ! omarchy-update-status; then
+  echo "Warning: could not refresh the update indicator; continuing to restart checks." >&2
+fi
+omarchy-update-restart

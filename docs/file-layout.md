@@ -303,7 +303,7 @@ the legacy finalization marker from `~/.local/state/omarchy/` into `done/`.
 `omarchy-apply-system` (root, in chroot) runs target-side setup at ISO
 finalization. It sources:
 
-- `install/config/all.sh` — theme links, lockout limits, lockscreen PAM,
+- `install/config/all.sh` — installation identity, theme links, lockout limits, lockscreen PAM,
   powerprofilesctl shebang fix, SSH command path and keepalive, docker setup,
   Snapper retention, locate index tuning, service enablement, firewall.
 - `install/hardware/all.sh` via `omarchy-apply-hardware` — vendor- and
@@ -319,7 +319,9 @@ The package lists the ISO pacstraps live at `install/omarchy-base.packages`
 and `install/omarchy-other.packages`; the ISO builder also reads them when
 constructing its offline mirror.
 
-`install/omarchy-desktop.packages` is a strict subset of the two product lists combined, plus the `omarchy-keyring` bootstrap needed to verify packages from the Omarchy repo. `omarchy-dev-setup-desktop` consumes its `# group:` markers stage by stage to set up the Omarchy desktop from a source checkout on an Arch system Omarchy did not install, while leaving boot, storage, and disk security to the host. The optional `display-manager` group is deliberately excluded from `all`; when named explicitly, it installs SDDM, the Omarchy greeter theme/session, and enables the service with a recorded rollback to the prior files, service state, and default target. Outside `$HOME`, the bootstrap adds the Omarchy pacman repository and pinned package key under `/etc/pacman.d/gnupg`, a root-owned `/etc/omarchy.conf` pointing at the checkout, and only when explicitly selected, lock-screen PAM services, a greeter session entry, or SDDM integration. Its production link mode deliberately removes the development sudoers policy that puts the user-writable checkout on root's `secure_path`. `test/shell.d/desktop-manifest-test.sh` keeps the package set grouped and within that boundary.
+`install/omarchy-desktop.packages` is a strict subset of the two product lists combined, plus the `omarchy-keyring` bootstrap needed to verify packages from the Omarchy repo. `omarchy-overlay-setup` consumes its `# group:` markers stage by stage to set up or reconcile the Omarchy desktop from a source checkout on an Arch system Omarchy did not install, while leaving boot, storage, and disk security to the host. The old `omarchy-dev-setup-desktop` name is a hidden compatibility wrapper. The optional `display-manager` group is deliberately excluded from `all`; when named explicitly, it installs SDDM, the Omarchy greeter theme/session, and enables the service with a recorded rollback to the prior files, service state, and default target. Outside `$HOME`, setup adds the Omarchy pacman repository and pinned package key under `/etc/pacman.d/gnupg`, a root-owned `/etc/omarchy.conf` pointing at the checkout, a root-owned `/etc/omarchy/installation.conf` that records the installation type, owner, and completed stages, and only when explicitly selected, lock-screen PAM services, a greeter session entry, or SDDM integration. Its link mode deliberately removes the development sudoers policy that puts the user-writable checkout on root's `secure_path`. `test/shell.d/desktop-manifest-test.sh` keeps the package set grouped and within that boundary, while `test/shell.d/overlay-setup-test.sh` exercises the staged setup and rollback behavior.
+
+Desktop-overlay migrations live under `migrations/desktop-overlay/` and record per-user completion under `~/.local/state/omarchy/desktop-overlay-migrations/`. They are intentionally separate from product migrations because an overlay owns fewer packages and system files. See [`update-process.md`](update-process.md) for the stage-aware update sequence and the explicit product steps it excludes.
 
 ## Explicit resync (`omarchy-reinstall-configs`)
 

@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# omarchy:summary=Run pending desktop-overlay migrations
+# omarchy:args=[--pending]
+
+set -euo pipefail
+
+mode="run"
+
+usage() {
+  echo "Usage: omarchy-overlay-migrate [--pending]"
+}
+
+while (($#)); do
+  case "$1" in
+    --pending)
+      mode="pending"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ $(omarchy-installation-type) != "desktop_overlay" ]]; then
+  echo "Error: desktop-overlay migrations require a registered desktop overlay." >&2
+  exit 1
+fi
+omarchy-overlay-stages >/dev/null
+
+omarchy_path=${OMARCHY_PATH:-}
+if [[ -z $omarchy_path ]]; then
+  echo "Error: OMARCHY_PATH is unset; run the link stage and start a fresh Omarchy session before migrating." >&2
+  exit 1
+fi
+
+migrations_dir="$omarchy_path/migrations/desktop-overlay"
+state_dir="${OMARCHY_OVERLAY_MIGRATION_STATE:-$HOME/.local/state/omarchy/desktop-overlay-migrations}"
+baseline_marker="$state_dir/.baseline-established"
+
+if [[ ! -f $baseline_marker ]]; then
+  echo "Error: the desktop-overlay migration baseline is missing: $baseline_marker" >&2
+  echo "Repair the registration with 'omarchy overlay register --repair <installed stages>...' before running migrations." >&2
+  exit 1
+fi
+
+migration_entries() {
+  local file filename
+
+  [[ -d $migrations_dir ]] || return 0
+  for file in "$migrations_dir"/*.sh; do
+    [[ -f $file ]] || continue
+    filename=${file##*/}
+    printf '%s\t%s\t%s\n' "$filename" "$file" "$state_dir/$filename"
+  done
+}
+
+pending_migrations() {
+  local name file marker
+
+  while IFS=$'\t' read -r name file marker; do
+    [[ -n $name ]] || continue
+    [[ -f $marker ]] || echo "$name"
+  done < <(migration_entries)
+}
+
+if [[ $mode == "pending" ]]; then
+  pending_output=$(pending_migrations)
+  if [[ -n $pending_output ]]; then
+    printf '%s\n' "$pending_output"
+    exit 0
+  else
+    exit 1
+  fi
+fi
+
+wait_for_pacman_transaction() {
+  local lock_file="${OMARCHY_PACMAN_LOCK_PATH:-/var/lib/pacman/db.lck}"
+
+  [[ -e $lock_file ]] || return 0
+  echo "Waiting for the pacman transaction to finish before running desktop-overlay migrations..."
+  for _ in {1..900}; do
+    [[ -e $lock_file ]] || return 0
+    sleep 1
+  done
+  echo "The pacman transaction is still running; desktop-overlay migrations will retry during the next update."
+  exit 0
+}
+
+wait_for_pacman_transaction
+
+mkdir -p "$state_dir"
+while IFS=$'\t' read -r name file marker; do
+  [[ -n $name ]] || continue
+  if [[ ! -f $marker ]]; then
+    echo -e "\e[32m\nRunning desktop-overlay migration (${name%.sh})\e[0m"
+    OMARCHY_PATH="$omarchy_path" bash -euo pipefail "$file"
+    touch "$marker"
+  fi
+done < <(migration_entries)

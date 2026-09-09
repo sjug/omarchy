@@ -28,6 +28,15 @@ while (($#)); do
   esac
 done
 
+installation_type=$(omarchy-installation-type --classify-only)
+if [[ $installation_type == "desktop_overlay" ]]; then
+  echo "Error: product migrations are not supported on a desktop overlay; run 'omarchy overlay migrate' instead." >&2
+  exit 1
+elif [[ $installation_type != "product" ]]; then
+  echo "Error: unsupported Omarchy installation type '$installation_type'." >&2
+  exit 1
+fi
+
 OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
 STATE_DIR="${OMARCHY_MIGRATION_STATE:-$HOME/.local/state/omarchy/migrations}"
 MIGRATIONS_DIR="$OMARCHY_PATH/migrations"

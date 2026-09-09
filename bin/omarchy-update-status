@@ -5,8 +5,20 @@
 
 set -e
 
-if omarchy-update-available >/dev/null; then
-  omarchy-shell -q omarchy.system-update refresh
-else
-  omarchy-shell -q omarchy.system-update clear
-fi
+set +e
+omarchy-update-available >/dev/null
+update_status=$?
+set -e
+
+case "$update_status" in
+  0)
+    omarchy-shell -q omarchy.system-update refresh
+    ;;
+  1)
+    omarchy-shell -q omarchy.system-update clear
+    ;;
+  *)
+    echo "Could not determine Omarchy update status; leaving the indicator unchanged." >&2
+    exit "$update_status"
+    ;;
+esac
