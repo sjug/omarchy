@@ -140,6 +140,7 @@ case "$1" in
     ;;
   show)
     [[ $2 == "origin/quattro:bin/omarchy-update" ]] || exit 1
+    [[ ${TEST_UPSTREAM_DISPATCH:-1} != "missing" ]] || exit 128
     echo '#!/bin/bash'
     if [[ ${TEST_UPSTREAM_DISPATCH:-1} == "1" ]]; then
       echo '# Desktop-overlay update dispatch is supported.'
@@ -351,3 +352,26 @@ if grep -q $'^omarchy-overlay-setup\t' "$call_log"; then
   fail "an unlinked overlay reaches package reconciliation" "$(<"$call_log")"
 fi
 pass "overlay updater fails cleanly before package work when the link stage is not active"
+
+# The marker in bin/omarchy-update is a compatibility contract, not a stray
+# comment: dropping it stalls every enrolled overlay at its current revision.
+# Assert it against the real dispatcher, since every case above only ever sees
+# the synthetic upstream written by the git stub.
+grep -Fqx '# Desktop-overlay update dispatch is supported.' "$ROOT/bin/omarchy-update" ||
+  fail "the real dispatcher no longer carries the overlay-dispatch marker that omarchy-update-overlay requires"
+grep -Fq 'Desktop-overlay update dispatch is supported.' "$ROOT/bin/omarchy-update-overlay" ||
+  fail "the overlay updater no longer checks for the dispatch marker"
+pass "the overlay-dispatch marker contract holds between the real dispatcher and the overlay updater"
+
+: >"$call_log"
+if TEST_GIT_STATE=behind TEST_UPSTREAM_DISPATCH=missing run_overlay_update -y \
+  >"$test_tmp/absent-dispatch.out" 2>"$test_tmp/absent-dispatch.err"; then
+  fail "overlay updater fast-forwards when the upstream dispatcher cannot be read"
+fi
+grep -q 'does not support desktop-overlay update dispatch' "$test_tmp/absent-dispatch.err" ||
+  fail "an unreadable upstream dispatcher does not produce the compatibility refusal" \
+    "$(<"$test_tmp/absent-dispatch.err")"
+if grep -q $'^git\tmerge' "$git_log"; then
+  fail "overlay updater merged despite an unreadable upstream dispatcher" "$(<"$git_log")"
+fi
+pass "an upstream without bin/omarchy-update is refused rather than fast-forwarded"

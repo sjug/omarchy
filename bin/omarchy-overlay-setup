@@ -871,17 +871,19 @@ stage_recorded() {
   [[ -n ${recorded[$1]:-} ]]
 }
 
+# The ledger is already loaded and validated before this runs; a valid one never
+# records zero stages, so an empty array means there was no descriptor to load.
 require_recorded_selected_stages() {
   local stage
 
-  if ! load_recorded_stages; then
+  if (( ${#recorded[@]} == 0 )); then
     echo "Error: $installation_conf does not register a desktop overlay." >&2
     echo "Run 'omarchy overlay register <stage>...' before reconciliation." >&2
     exit 1
   fi
   for stage in "${!selected[@]}"; do
     if ! stage_recorded "$stage"; then
-      echo "Error: package stage '$stage' is not recorded in $installation_conf." >&2
+      echo "Error: $operation stage '$stage' is not recorded in $installation_conf." >&2
       exit 1
     fi
   done

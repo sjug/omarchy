@@ -7,6 +7,12 @@
 
 set -e
 
+# Compatibility contract for registered desktop overlays. Before fast-forwarding
+# an enrolled checkout and re-execing into it, omarchy-update-overlay reads the
+# upstream blob of this file and requires the marker line below verbatim. Do not
+# reword or remove it: an upstream without the marker stalls every enrolled
+# overlay until a later upstream commit restores it. Covered by
+# test/shell.d/overlay-update-test.sh.
 # Desktop-overlay update dispatch is supported.
 
 if [[ -z ${OMARCHY_UPDATE_LOGGED:-} ]]; then

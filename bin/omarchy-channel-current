@@ -4,7 +4,13 @@
 
 set -euo pipefail
 
-installation_type=$(omarchy-installation-type --classify-only)
+# errexit would abort on a failing classifier before the unknown branch below
+# could run, leaving callers that read stdout for a channel name with nothing.
+if ! installation_type=$(omarchy-installation-type --classify-only); then
+  echo unknown
+  exit 1
+fi
+
 if [[ $installation_type == "desktop_overlay" ]]; then
   echo desktop-overlay
   exit 0

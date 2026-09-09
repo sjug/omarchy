@@ -113,7 +113,10 @@ if [[ ${OMARCHY_OVERLAY_UPDATE_REEXECUTED:-0} != "1" ]]; then
     fail "branch '$branch' has diverged from '$upstream'; reconcile it centrally before updating this machine."
   fi
   if (( behind > 0 )); then
-    if ! git -C "$omarchy_path" show "${upstream}:bin/omarchy-update" | grep -Fqx '# Desktop-overlay update dispatch is supported.'; then
+    # Capture the blob before matching. Through a pipe, grep -q short-circuits
+    # on the match and a SIGPIPE from git would surface as a pipefail failure.
+    if ! upstream_dispatcher=$(git -C "$omarchy_path" show "${upstream}:bin/omarchy-update" 2>/dev/null) ||
+      ! grep -Fqx '# Desktop-overlay update dispatch is supported.' <<<"$upstream_dispatcher"; then
       fail "the upstream checkout does not support desktop-overlay update dispatch; refusing to fast-forward into the product update path."
     fi
     git -C "$omarchy_path" merge --ff-only "$upstream"

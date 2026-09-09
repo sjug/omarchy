@@ -10,7 +10,7 @@ omarchy_path=${OMARCHY_PATH:-/usr/share/omarchy}
 
 if [[ $installation_type == "desktop_overlay" ]]; then
   omarchy-overlay-stages >/dev/null || exit 2
-  if [[ -z ${OMARCHY_PATH:-} || $omarchy_path == "/usr/share/omarchy" ]]; then
+  if [[ $omarchy_path == "/usr/share/omarchy" ]]; then
     echo "Error: desktop overlay is not running from its registered checkout." >&2
     exit 2
   fi

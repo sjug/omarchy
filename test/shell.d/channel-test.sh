@@ -81,6 +81,10 @@ write_stub omarchy-installation-type '#!/bin/bash
 if [[ ${OMARCHY_TEST_REQUIRE_CLASSIFY_ONLY:-0} == "1" && ${1:-} != "--classify-only" ]]; then
   exit 72
 fi
+if [[ ${OMARCHY_TEST_CLASSIFY_FAILS:-0} == "1" ]]; then
+  echo "stub classification failure" >&2
+  exit 1
+fi
 printf "%s\n" "${OMARCHY_TEST_INSTALLATION_TYPE:-product}"
 '
 
@@ -211,3 +215,14 @@ pass "current channel identifies overlays independently of product channels"
 unregistered_channel=$(OMARCHY_TEST_INSTALLATION_TYPE=checkout_unregistered current_channel unknown "" "$test_tmp/dev-checkout")
 [[ $unregistered_channel == "dev" ]] || fail "unregistered checkout loses the read-only dev-channel fallback" "$unregistered_channel"
 pass "unregistered checkout keeps the read-only dev-channel fallback"
+
+# errexit would otherwise abort on the failing command substitution, so callers
+# reading stdout for a channel name would get an empty string instead.
+classify_status=0
+failed_output=$(OMARCHY_TEST_CLASSIFY_FAILS=1 current_channel unknown "" /usr/share/omarchy 2>/dev/null) ||
+  classify_status=$?
+(( classify_status == 1 )) ||
+  fail "a failing classifier does not keep the nonzero channel exit" "$classify_status"
+[[ $failed_output == "unknown" ]] ||
+  fail "a failing classifier suppresses the documented unknown channel" "$failed_output"
+pass "current channel reports unknown and exits nonzero when classification fails"

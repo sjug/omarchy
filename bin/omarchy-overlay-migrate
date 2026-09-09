@@ -3,6 +3,11 @@
 # omarchy:summary=Run pending desktop-overlay migrations
 # omarchy:args=[--pending]
 
+# Exit codes for --pending: 0 when migrations are pending (their names go to
+# stdout), 1 when none are, 2 when the query itself could not be answered —
+# including failures propagated by omarchy-installation-type and
+# omarchy-overlay-stages. A watcher must not read a broken overlay as healthy,
+# so no failure shares the "none pending" code.
 set -euo pipefail
 
 mode="run"
@@ -13,7 +18,7 @@ usage() {
 
 while (($#)); do
   case "$1" in
-    --pending)
+    --pending|--check)
       mode="pending"
       shift
       ;;
@@ -23,21 +28,21 @@ while (($#)); do
       ;;
     *)
       echo "Unknown option: $1" >&2
-      exit 1
+      exit 2
       ;;
   esac
 done
 
-if [[ $(omarchy-installation-type) != "desktop_overlay" ]]; then
+if ! installation_type=$(omarchy-installation-type) || [[ $installation_type != "desktop_overlay" ]]; then
   echo "Error: desktop-overlay migrations require a registered desktop overlay." >&2
-  exit 1
+  exit 2
 fi
-omarchy-overlay-stages >/dev/null
+omarchy-overlay-stages >/dev/null || exit 2
 
 omarchy_path=${OMARCHY_PATH:-}
 if [[ -z $omarchy_path ]]; then
   echo "Error: OMARCHY_PATH is unset; run the link stage and start a fresh Omarchy session before migrating." >&2
-  exit 1
+  exit 2
 fi
 
 migrations_dir="$omarchy_path/migrations/desktop-overlay"
@@ -47,7 +52,7 @@ baseline_marker="$state_dir/.baseline-established"
 if [[ ! -f $baseline_marker ]]; then
   echo "Error: the desktop-overlay migration baseline is missing: $baseline_marker" >&2
   echo "Repair the registration with 'omarchy overlay register --repair <installed stages>...' before running migrations." >&2
-  exit 1
+  exit 2
 fi
 
 migration_entries() {

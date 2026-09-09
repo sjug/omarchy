@@ -5,10 +5,8 @@
 
 set -e
 
-set +e
-omarchy-update-available >/dev/null
-update_status=$?
-set -e
+update_status=0
+omarchy-update-available >/dev/null || update_status=$?
 
 case "$update_status" in
   0)

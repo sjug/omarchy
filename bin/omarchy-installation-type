@@ -38,6 +38,11 @@ installed_package_from() {
   return 1
 }
 
+# The descriptor is a KEY=value list, not shell: values are bare literals with
+# no quoting, no expansion, and no escapes, so a value is exactly the characters
+# between the '=' and end-of-line or a trailing comment. omarchy-overlay-setup
+# generates it in that form; /etc/omarchy.conf next to it is quoted shell and is
+# sourced, but this file never is. A quoted value is rejected, not unquoted.
 descriptor_value() {
   local key="$1"
   local -a values=()
@@ -49,6 +54,10 @@ descriptor_value() {
 
 descriptor_repair_hint() {
   echo "Repair it from the checkout with './bin/omarchy-overlay-register --repair <stage>...' after verifying the installed stages." >&2
+}
+
+descriptor_grammar_hint() {
+  echo "Descriptor values are bare literals, not shell: write KEY=desktop_overlay, without quotes." >&2
 }
 
 configured_runtime_checkout() {
@@ -69,6 +78,7 @@ if [[ -e $installation_conf ]]; then
 
   if ! installation=$(descriptor_value OMARCHY_INSTALLATION); then
     echo "Error: $installation_conf must contain exactly one valid OMARCHY_INSTALLATION assignment." >&2
+    descriptor_grammar_hint
     descriptor_repair_hint
     exit 1
   fi
@@ -92,6 +102,7 @@ if [[ -e $installation_conf ]]; then
       fi
       if ! stage_csv=$(descriptor_value OMARCHY_DESKTOP_STAGES); then
         echo "Error: $installation_conf must contain exactly one valid OMARCHY_DESKTOP_STAGES assignment." >&2
+        descriptor_grammar_hint
         descriptor_repair_hint
         exit 1
       fi
@@ -115,6 +126,7 @@ if [[ -e $installation_conf ]]; then
       ;;
     *)
       echo "Error: unsupported OMARCHY_INSTALLATION value '$installation' in $installation_conf." >&2
+      descriptor_grammar_hint
       descriptor_repair_hint
       exit 1
       ;;

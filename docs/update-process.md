@@ -23,7 +23,7 @@ The design goal is:
 | --- | --- | --- |
 | `${XDG_RUNTIME_DIR:-/tmp}/omarchy-update.lock` | user | Prevent overlapping update runs. Owned by `omarchy-update-lock`; compatibility wrappers inherit/respect it. |
 | `/tmp/omarchy-update.log` | user | Transcript of `omarchy update`, used by `omarchy-update-analyze-logs`. |
-| `/etc/omarchy/installation.conf` | root | Installation type and, for a desktop overlay, its owning user and canonical stage ledger. |
+| `/etc/omarchy/installation.conf` | root | Installation type and, for a desktop overlay, its owning user and canonical stage ledger. Written as `KEY=value` with bare literal values — it is parsed, never sourced, so quoted shell assignments are rejected. |
 | `~/.local/state/omarchy/current/` | user | Generated active theme, selected theme name, and current background symlink. |
 | `~/.local/state/omarchy/migrations/` | user | Per-user migration markers. |
 | `~/.local/state/omarchy/desktop-overlay-migrations/` | user | Per-user baseline sentinel and markers for the independent desktop-overlay migration stream. |
@@ -61,6 +61,8 @@ the migration should no-op for other users.
 For watchers and diagnostics, `omarchy-migrate --pending` prints pending
 migration names and exits `0` when any are pending. When no migrations are
 pending, it prints nothing and exits non-zero.
+
+`omarchy-overlay-migrate --pending` reports the same way but separates the two non-zero cases, so a watcher cannot read a broken overlay as a healthy one: `0` when migrations are pending, `1` when none are, and `2` when the query could not be answered at all (a missing baseline sentinel, a non-overlay installation, an unreadable descriptor, or a failure propagated by `omarchy-installation-type` or `omarchy-overlay-stages`). Both commands accept `--check` as an alias for `--pending`.
 
 ## Product raw pacman guard
 
@@ -215,6 +217,8 @@ omarchy-update-overlay
 The overlay updater never creates a snapshot, invokes product migrations, uses the product package conflict/quarantine updater, refreshes user configuration automatically, or reapplies the `files` stage's MIME preference. It also omits the product-only sleep inhibitor, log analysis, standalone keyring bootstrap, AUR update, mise update, and orphan cleanup steps. `omarchy-keyring` belongs to the overlay core package group and is reconciled in the single system package transaction; core reconciliation first restores an absent repository stanza and pinned signing key, while leaving an existing customized stanza unchanged. Foreign AUR packages such as `brave-origin-bin` remain the user's responsibility. Package reconciliation is noninteractive after the update's single confirmation; a package conflict stops safely for manual repair rather than prompting halfway through the pipeline.
 
 If the recorded display-manager stage no longer owns the system display-manager alias or its rollback transaction is invalid, host artifact preflight stops before confirmation or checkout fetch. The error prints the exact repair command with `display-manager` omitted. Repairing that ledger changes neither the current greeter nor the stored rollback files; after the host state is repaired, `omarchy overlay setup display-manager` re-adopts the stage.
+
+The overlay-dispatch marker is a compatibility contract, not an incidental comment. Before fast-forwarding, `omarchy-update-overlay` reads the upstream blob of `bin/omarchy-update` and requires the literal line `# Desktop-overlay update dispatch is supported.`. An upstream that drops or rewords it stalls enrolled machines at their current revision until a later upstream commit restores the marker, at which point the existing updater proceeds on its next fetch. `test/shell.d/overlay-update-test.sh` asserts the marker is present in the real dispatcher so the contract cannot be broken by an unrelated cleanup.
 
 The maintained overlay branch is append-only from the clients' perspective. Upstream changes are integrated centrally with signed merge commits, the maintained branch is never rebased or force-pushed, and enrolled machines consume only fast-forwards. A locally-ahead checkout remains usable. Tracked modifications, a detached branch, or divergent history must be repaired before system packages change. Untracked files are allowed because they do not alter tracked update code; if an incoming fast-forward collides with one, Git refuses the merge before package reconciliation.
 
