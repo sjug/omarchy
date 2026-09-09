@@ -58,10 +58,53 @@ if [[ $installation_type == "desktop_overlay" ]]; then
 fi
 
 default_target="/usr/share/omarchy"
-# Product commands live in /usr/bin while shared helpers live in the runtime
-# tree. A dev-linked product resolves both from its active checkout.
+# Unlike session commands, this bootstrap must also work over SSH without uwsm's
+# environment. Resolve the configured runtime only when none is already active.
+# Product commands live in /usr/bin, not beside their install/helpers directory.
+# Keep runtime resolution in sync with bin/omarchy-dev-link.
+if [[ -z ${OMARCHY_PATH:-} ]]; then
+  runtime_conf="${OMARCHY_RUNTIME_CONF_PATH:-/etc/omarchy.conf}"
+  if [[ -e $runtime_conf || -L $runtime_conf ]]; then
+    if [[ ! -f $runtime_conf || ! -r $runtime_conf ]]; then
+      echo "Error: runtime configuration is not a readable regular file: $runtime_conf" >&2
+      echo "Repair or remove it, then retry." >&2
+      exit 1
+    fi
+    # Parse failures can terminate Bash without invoking the ERR trap below.
+    runtime_conf_status=0
+    "$BASH" -n "$runtime_conf" || runtime_conf_status=$?
+    if (( runtime_conf_status != 0 )); then
+      echo "Error: could not load runtime configuration: $runtime_conf" >&2
+      echo "Repair or remove it, then retry." >&2
+      exit "$runtime_conf_status"
+    fi
+    # Keep this assignment unconditional: `if source` or `if ! OMARCHY_PATH=$(...)`
+    # suppresses errexit, even with an explicit set -e inside the substitution.
+    # The diagnostic trap is scoped to this substitution, not the caller.
+    OMARCHY_PATH=$(
+      set -e
+      trap 'printf "Error: could not load runtime configuration: %s\nRepair or remove it, then retry.\n" "$runtime_conf" >&2' ERR
+      # shellcheck source=/dev/null
+      source "$runtime_conf"
+      printf '%s' "${OMARCHY_PATH:-}"
+    )
+  fi
+fi
+
+# Unlink must repair a deleted or older checkout using the installed helper.
+# A failed configuration still refuses above; it is not a fallback condition.
+runtime_helper="${OMARCHY_PATH:-/usr/share/omarchy}/install/helpers/runtime-link.sh"
+packaged_helper="/usr/share/omarchy/install/helpers/runtime-link.sh"
+if [[ ! -f $runtime_helper || ! -r $runtime_helper ]]; then
+  if [[ -f $packaged_helper && -r $packaged_helper ]]; then
+    runtime_helper=$packaged_helper
+  else
+    echo "Error: no readable regular runtime-link helper; checked '$runtime_helper' and '$packaged_helper'." >&2
+    exit 1
+  fi
+fi
 # shellcheck source=../install/helpers/runtime-link.sh
-source "$OMARCHY_PATH/install/helpers/runtime-link.sh"
+source "$runtime_helper"
 omarchy_write_runtime_link "$default_target" 0
 echo
 

@@ -72,7 +72,10 @@ run_unlink() {
 packaged_bin="$test_tmp/usr/bin"
 packaged_root="$test_tmp/usr/share/omarchy"
 mkdir -p "$packaged_bin" "$packaged_root/install/helpers"
-cp "$ROOT/bin/omarchy-dev-unlink" "$packaged_bin/"
+# Redirect the package data root even when OMARCHY_PATH is unset, so these
+# commands never source the test host's installed helper.
+sed "s|/usr/share/omarchy|$packaged_root|g" "$ROOT/bin/omarchy-dev-unlink" >"$packaged_bin/omarchy-dev-unlink"
+chmod +x "$packaged_bin/omarchy-dev-unlink"
 cp "$ROOT/install/helpers/runtime-link.sh" "$packaged_root/install/helpers/"
 cat >"$packaged_bin/omarchy-installation-type" <<'SH'
 #!/bin/bash
@@ -140,3 +143,141 @@ grep -q 'must contain exactly one valid OMARCHY_INSTALLATION' "$test_tmp/malform
   fail "dev unlink hides the descriptor error that caused its refusal" "$(<"$test_tmp/malformed.err")"
 [[ ! -s $log_file ]] || fail "malformed-descriptor dev unlink changes system state" "$(<"$log_file")"
 pass "dev unlink fails closed when installation classification fails"
+
+run_unlink_without_environment() {
+  env -u OMARCHY_PATH \
+    HOME="$test_tmp/home" \
+    OMARCHY_INSTALLATION_CONF_PATH="$descriptor" \
+    OMARCHY_RUNTIME_CONF_PATH="$conf_file" \
+    OMARCHY_DEV_UNLINK_TEST_LOG="$log_file" \
+    OMARCHY_DEV_UNLINK_TEST_CONF="$conf_file" \
+    PATH="$stub_bin:$PATH" \
+    "$packaged_bin/omarchy-dev-unlink" --no-reboot \
+    >"$test_tmp/nopath.out" 2>"$test_tmp/nopath.err"
+}
+
+assert_unlink_written() {
+  [[ $(<"$conf_file") == "export OMARCHY_PATH=\"$packaged_root\"" ]] ||
+    fail "dev unlink without OMARCHY_PATH did not restore the packaged runtime"
+  grep -q $'^sudo\ttee\t' "$log_file" || fail "dev unlink skipped the runtime writer"
+  grep -Fx $'sudo\trm\t-f\t/etc/sudoers.d/omarchy-dev-path' "$log_file" >/dev/null ||
+    fail "dev unlink without OMARCHY_PATH did not remove the sudoers policy"
+}
+
+rm -f "$descriptor" "$conf_file"
+: >"$log_file"
+run_unlink_without_environment || fail "packaged dev unlink failed with OMARCHY_PATH unset" "$(<"$test_tmp/nopath.err")"
+assert_unlink_written
+pass "dev unlink uses the packaged helper and writes configuration without a session environment"
+
+runtime_checkout="$test_tmp/runtime checkout"
+mkdir -p "$runtime_checkout/install/helpers"
+cp "$ROOT/install/helpers/runtime-link.sh" "$runtime_checkout/install/helpers/"
+mv "$packaged_root/install/helpers/runtime-link.sh" "$packaged_root/install/helpers/runtime-link.saved"
+printf 'export OMARCHY_PATH="%s"\n' "$runtime_checkout" >"$conf_file"
+: >"$log_file"
+run_unlink_without_environment || fail "dev unlink ignored the configured checkout without OMARCHY_PATH" "$(<"$test_tmp/nopath.err")"
+assert_unlink_written
+pass "dev unlink uses the configured checkout without a session environment or packaged helper"
+
+printf 'export OMARCHY_PATH="/opt/omarchy\n' >"$conf_file"
+: >"$log_file"
+parse_status=0
+run_unlink_without_environment || parse_status=$?
+(( parse_status == 2 )) || fail "dev unlink does not preserve the configuration syntax-error status" "$parse_status"
+[[ ! -s $log_file ]] || fail "dev unlink writes system files with an unbalanced quote in the runtime configuration"
+grep -F "Error: could not load runtime configuration: $conf_file" "$test_tmp/nopath.err" >/dev/null ||
+  fail "dev unlink does not explain its configuration parse failure" "$(<"$test_tmp/nopath.err")"
+grep -Fx 'Repair or remove it, then retry.' "$test_tmp/nopath.err" >/dev/null ||
+  fail "dev unlink does not explain how to recover from a configuration parse failure"
+pass "dev unlink explains configuration syntax errors before privileged writes"
+
+printf 'return 42\n' >"$conf_file"
+: >"$log_file"
+runtime_status=0
+run_unlink_without_environment || runtime_status=$?
+(( runtime_status == 42 )) || fail "dev unlink does not preserve a failing configuration's exit status" "$runtime_status"
+[[ ! -s $log_file ]] || fail "dev unlink writes system files after failing to load its runtime configuration"
+grep -F "Error: could not load runtime configuration: $conf_file" "$test_tmp/nopath.err" >/dev/null ||
+  fail "dev unlink does not explain its runtime configuration load failure" "$(<"$test_tmp/nopath.err")"
+grep -Fx 'Repair or remove it, then retry.' "$test_tmp/nopath.err" >/dev/null ||
+  fail "dev unlink does not explain how to recover from a configuration load failure"
+pass "dev unlink refuses a broken runtime configuration before privileged writes"
+
+printf 'false\nexport OMARCHY_PATH="%s"\n' "$runtime_checkout" >"$conf_file"
+: >"$log_file"
+if run_unlink_without_environment; then
+  fail "dev unlink suppresses errexit while loading its runtime configuration"
+fi
+[[ ! -s $log_file ]] || fail "dev unlink writes system files after a failed configuration command"
+pass "dev unlink preserves errexit while loading its runtime configuration"
+
+OMARCHY_DEV_UNLINK_COMMAND="$packaged_bin/omarchy-dev-unlink" \
+  OMARCHY_TEST_RUNTIME_PATH="$runtime_checkout" \
+  run_unlink --no-reboot >/dev/null
+assert_unlink_written
+pass "dev unlink keeps the active environment ahead of the configured runtime"
+
+mv "$packaged_root/install/helpers/runtime-link.saved" "$packaged_root/install/helpers/runtime-link.sh"
+for scenario in deleted old unreadable directory; do
+  stale_checkout="$test_tmp/stale-$scenario"
+  if [[ $scenario != "deleted" ]]; then
+    mkdir -p "$stale_checkout/install/helpers"
+  fi
+  case "$scenario" in
+    unreadable)
+      cp "$ROOT/install/helpers/runtime-link.sh" "$stale_checkout/install/helpers/"
+      chmod 000 "$stale_checkout/install/helpers/runtime-link.sh"
+      ;;
+    directory) mkdir "$stale_checkout/install/helpers/runtime-link.sh" ;;
+  esac
+  for origin in config environment; do
+    printf 'export OMARCHY_PATH="%s"\n' "$stale_checkout" >"$conf_file"
+    : >"$log_file"
+    if [[ $origin == "config" ]]; then
+      run_unlink_without_environment || fail "dev unlink cannot recover a $scenario checkout from config" "$(<"$test_tmp/nopath.err")"
+    else
+      OMARCHY_DEV_UNLINK_COMMAND="$packaged_bin/omarchy-dev-unlink" \
+        OMARCHY_TEST_RUNTIME_PATH="$stale_checkout" \
+        run_unlink --no-reboot >"$test_tmp/nopath.out" 2>"$test_tmp/nopath.err" ||
+        fail "dev unlink cannot recover a $scenario checkout from the environment" "$(<"$test_tmp/nopath.err")"
+    fi
+    assert_unlink_written
+    pass "dev unlink recovers a $scenario checkout from $origin through the packaged helper"
+  done
+done
+
+mv "$packaged_root/install/helpers/runtime-link.sh" "$packaged_root/install/helpers/runtime-link.saved"
+printf 'export OMARCHY_PATH="%s"\n' "$stale_checkout" >"$conf_file"
+cp "$conf_file" "$test_tmp/conf-before-refusal"
+: >"$log_file"
+if run_unlink_without_environment; then
+  fail "dev unlink accepts two unusable runtime helpers"
+fi
+for candidate in "$stale_checkout" "$packaged_root"; do
+  grep -F "$candidate/install/helpers/runtime-link.sh" "$test_tmp/nopath.err" >/dev/null ||
+    fail "dev unlink does not name both unusable helpers" "$(<"$test_tmp/nopath.err")"
+done
+[[ ! -s $log_file ]] || fail "dev unlink writes system files without a usable runtime helper"
+cmp -s "$conf_file" "$test_tmp/conf-before-refusal" || fail "dev unlink changes the configuration when helper resolution fails"
+pass "dev unlink names both unusable helpers and refuses before writing"
+
+mv "$packaged_root/install/helpers/runtime-link.saved" "$packaged_root/install/helpers/runtime-link.sh"
+for scenario in directory unreadable dangling-symlink; do
+  bad_conf="$test_tmp/config-$scenario"
+  case "$scenario" in
+    directory) mkdir "$bad_conf" ;;
+    unreadable) touch "$bad_conf"; chmod 000 "$bad_conf" ;;
+    dangling-symlink) ln -s "$test_tmp/missing-config-target" "$bad_conf" ;;
+  esac
+  : >"$log_file"
+  if conf_file="$bad_conf" run_unlink_without_environment; then
+    fail "dev unlink ignores a $scenario runtime configuration"
+  fi
+  grep -F "Error: runtime configuration is not a readable regular file: $bad_conf" "$test_tmp/nopath.err" >/dev/null ||
+    fail "dev unlink does not explain the $scenario configuration refusal" "$(<"$test_tmp/nopath.err")"
+  grep -Fx 'Repair or remove it, then retry.' "$test_tmp/nopath.err" >/dev/null ||
+    fail "dev unlink does not explain how to recover from a $scenario configuration"
+  [[ ! -s $log_file ]] || fail "dev unlink writes system files with a $scenario runtime configuration"
+  pass "dev unlink explains and refuses a $scenario configuration before writing"
+done
