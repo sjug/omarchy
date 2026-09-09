@@ -40,7 +40,8 @@ BarWidget {
     id: updateProc
     command: ["omarchy-update-available"]
     onExited: function(exitCode) {
-      root.updateAvailable = exitCode === 0
+      if (exitCode === 0) root.updateAvailable = true
+      else if (exitCode === 1) root.updateAvailable = false
     }
   }
 
