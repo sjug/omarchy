@@ -16,7 +16,9 @@ timeout_log="$test_tmp/timeout.log"
 script_log="$test_tmp/script.log"
 lock_log="$test_tmp/lock.log"
 state_dir="$test_tmp/migration-state"
+test_home="$test_tmp/home with spaces"
 mkdir -p "$stub_bin" "$checkout/bin"
+mkdir -p "$test_home/.local/share/fonts" "$checkout/default/fonts/omarchy"
 mkdir -p "$state_dir"
 touch "$state_dir/.baseline-established"
 
@@ -36,6 +38,8 @@ SH
 }
 
 for command in \
+  install \
+  fc-cache \
   omarchy-installation-type \
   omarchy-update-requires-free-space \
   omarchy-update-confirm \
@@ -153,7 +157,11 @@ case "$1" in
     exit 0
     ;;
   diff)
-    if [[ ${TEST_CHANGED_CONFIGS:-0} == 1 && $* == *"--diff-filter=D"* ]]; then
+    if [[ ${@: -1} == "default/fonts/omarchy/omarchy.ttf" ]]; then
+      if [[ ${TEST_ICON_FONT_CHANGE:-none} == "modified" || ${TEST_ICON_FONT_CHANGE:-none} == "deleted" ]]; then
+        echo default/fonts/omarchy/omarchy.ttf
+      fi
+    elif [[ ${TEST_CHANGED_CONFIGS:-0} == 1 && $* == *"--diff-filter=D"* ]]; then
       echo config/retired.conf
     elif [[ ${TEST_CHANGED_CONFIGS:-0} == 1 ]]; then
       printf '%s\n' config/hypr/hyprland.lua config/foot/foot.ini
@@ -182,7 +190,8 @@ run_overlay_update() {
   : >"$timeout_log"
   : >"$script_log"
   : >"$lock_log"
-  OMARCHY_PATH="$checkout" \
+  HOME="$test_home" \
+    OMARCHY_PATH="$checkout" \
     TEST_CALL_LOG="$call_log" \
     TEST_GIT_LOG="$git_log" \
     TEST_TIMEOUT_LOG="$timeout_log" \
@@ -191,6 +200,7 @@ run_overlay_update() {
     TEST_LOCK_HELD="${TEST_LOCK_HELD:-1}" \
     TEST_GIT_STATE="${TEST_GIT_STATE:-clean}" \
     TEST_CHANGED_CONFIGS="${TEST_CHANGED_CONFIGS:-0}" \
+    TEST_ICON_FONT_CHANGE="${TEST_ICON_FONT_CHANGE:-none}" \
     TEST_UPSTREAM_DISPATCH="${TEST_UPSTREAM_DISPATCH:-1}" \
     TEST_FAILING_STEP="${TEST_FAILING_STEP:-}" \
     OMARCHY_UPDATE_LOGGED=1 \
@@ -375,3 +385,48 @@ if grep -q $'^git\tmerge' "$git_log"; then
   fail "overlay updater merged despite an unreadable upstream dispatcher" "$(<"$git_log")"
 fi
 pass "an upstream without bin/omarchy-update is refused rather than fast-forwarded"
+
+# The config stage copies this font once; updates must report source changes
+# without overwriting the user's copy or rebuilding their font cache.
+printf 'new icon font\n' >"$checkout/default/fonts/omarchy/omarchy.ttf"
+printf 'custom user font\n' >"$test_home/.local/share/fonts/omarchy.ttf"
+OMARCHY_OVERLAY_UPDATE_REEXECUTED=1 OMARCHY_OVERLAY_UPDATE_OLD_HEAD=old-head \
+  TEST_ICON_FONT_CHANGE=modified run_overlay_update -y >"$test_tmp/font-changed.out"
+grep -Fq 'Omarchy icon font changed' "$test_tmp/font-changed.out" ||
+  fail "an icon-font-only update reports its manual refresh" "$(<"$test_tmp/font-changed.out")"
+grep -Fxq '  install -Dm644 -- "$OMARCHY_PATH/default/fonts/omarchy/omarchy.ttf" "$HOME/.local/share/fonts/omarchy.ttf"' "$test_tmp/font-changed.out" ||
+  fail "font refresh command uses the configured checkout and quotes both paths"
+grep -Fxq '  fc-cache -f' "$test_tmp/font-changed.out" || fail "font refresh includes rebuilding the font cache"
+grep -Fxq '  omarchy restart shell' "$test_tmp/font-changed.out" || fail "font refresh explains how to load the new glyphs"
+[[ $(<"$test_home/.local/share/fonts/omarchy.ttf") == "custom user font" ]] ||
+  fail "font reporting overwrites the user's copy"
+[[ $(<"$call_log") == "$expected" ]] || fail "font reporting changes the update sequence" "$(<"$call_log")"
+grep -Fxq -- "-C $checkout diff --name-only old-head..new-head -- default/fonts/omarchy/omarchy.ttf" "$git_log" ||
+  fail "font reporting does not compare the exact source over the applied revision range"
+pass "an icon-font-only update prints refresh commands without modifying user assets"
+
+for font_change in none readme; do
+  OMARCHY_OVERLAY_UPDATE_REEXECUTED=1 OMARCHY_OVERLAY_UPDATE_OLD_HEAD=old-head \
+    TEST_CHANGED_CONFIGS=1 TEST_ICON_FONT_CHANGE="$font_change" \
+    run_overlay_update -y >"$test_tmp/font-unchanged.out"
+  if grep -Fq 'fc-cache' "$test_tmp/font-unchanged.out"; then
+    fail "unrelated config or font documentation changes prompt a font refresh"
+  fi
+done
+TEST_ICON_FONT_CHANGE=modified run_overlay_update -y >"$test_tmp/no-checkout-change.out"
+if grep -Fq 'fc-cache' "$test_tmp/no-checkout-change.out"; then
+  fail "an update without a checkout revision change prompts a font refresh"
+fi
+pass "font refresh notices require an applied change to the icon font itself"
+
+rm "$checkout/default/fonts/omarchy/omarchy.ttf"
+OMARCHY_OVERLAY_UPDATE_REEXECUTED=1 OMARCHY_OVERLAY_UPDATE_OLD_HEAD=old-head \
+  TEST_ICON_FONT_CHANGE=deleted run_overlay_update -y >"$test_tmp/font-removed.out"
+grep -Fq 'Omarchy icon font source was removed' "$test_tmp/font-removed.out" ||
+  fail "a removed font source gets an actionable review notice"
+if grep -Eq '^  (install|fc-cache|omarchy restart shell)' "$test_tmp/font-removed.out"; then
+  fail "a removed font source gets an unusable refresh command"
+fi
+[[ $(<"$test_home/.local/share/fonts/omarchy.ttf") == "custom user font" ]] ||
+  fail "a removed font source deletes the user's installed font"
+pass "a removed icon font is reported without copying or removing user files"

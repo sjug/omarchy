@@ -209,7 +209,7 @@ omarchy-update-overlay
   │    └─ reapply lock, session-entry, and display-manager files without another package transaction; preserve SDDM service, target, and runtime state
   ├─ omarchy-overlay-migrate
   ├─ omarchy-hook post-update
-  ├─ print manual omarchy refresh config commands for defaults changed by the checkout update
+  ├─ print manual refresh commands for changed config defaults and the copied icon font
   ├─ update-indicator refresh; failure warns without invalidating completed package work
   └─ run normal restart checks
 ```
@@ -224,7 +224,7 @@ The maintained overlay branch is append-only from the clients' perspective. Upst
 
 Changed files under `config/` are reported instead of copied because those paths are user-owned after initial setup. The update prints one `omarchy refresh config <relative-path>` command per changed default so the user can inspect and opt into each refresh.
 
-Copied user assets also remain manual in this phase. When an upstream integration changes `default/fonts/omarchy/omarchy.ttf`, update the copy at `~/.local/share/fonts/omarchy.ttf` from the checkout and run `fc-cache -f` before restarting the shell. Do not use the product's legacy-font retirement migration on an overlay: there is no packaged replacement under `/usr/share/fonts/omarchy/`. The input-device state format transition, in contrast, has an overlay migration calling the same user-only repair helper as the product, so an existing touchpad or touchscreen disable survives the new data-only loader.
+Copied user assets also remain manual in this phase. When a checkout update changes `default/fonts/omarchy/omarchy.ttf`, the updater prints commands to copy it to `~/.local/share/fonts/omarchy.ttf`, run `fc-cache -f`, and restart the shell. Review any local font customization before running them. Unchanged fonts and font documentation changes do not trigger the notice; a removed source produces a review notice instead of an unusable copy command. The updater never copies or removes the user's font itself. Do not use the product's legacy-font retirement migration on an overlay: there is no packaged replacement under `/usr/share/fonts/omarchy/`. The input-device state format transition, in contrast, has an overlay migration calling the same user-only repair helper as the product, so an existing touchpad or touchscreen disable survives the new data-only loader.
 
 ## Path 2: direct `sudo pacman -Syu` attempt
 

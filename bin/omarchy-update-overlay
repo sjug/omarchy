@@ -159,6 +159,20 @@ if [[ $old_head != "$current_head" ]] && git -C "$omarchy_path" merge-base --is-
     echo -e "\e[33m\nDesktop defaults were removed upstream; review any corresponding user-owned files:\e[0m"
     printf '  %s\n' "${removed_configs[@]}"
   fi
+
+  # Setup copies this user asset outside config/, so it needs its own notice.
+  changed_icon_font=$(git -C "$omarchy_path" diff --name-only "$old_head..$current_head" -- default/fonts/omarchy/omarchy.ttf)
+  if [[ -n $changed_icon_font ]]; then
+    if [[ -f $omarchy_path/default/fonts/omarchy/omarchy.ttf ]]; then
+      echo -e "\e[33m\nOmarchy icon font changed; review your local copy, then refresh manually:\e[0m"
+      printf '%s\n' \
+        '  install -Dm644 -- "$OMARCHY_PATH/default/fonts/omarchy/omarchy.ttf" "$HOME/.local/share/fonts/omarchy.ttf"' \
+        '  fc-cache -f' \
+        '  omarchy restart shell'
+    else
+      echo -e "\e[33m\nOmarchy icon font source was removed; review ~/.local/share/fonts/omarchy.ttf manually (left untouched).\e[0m"
+    fi
+  fi
 fi
 
 if ! omarchy-update-status; then
