@@ -150,3 +150,35 @@ status=$(OMARCHY_TEST_STAGES_FAIL=1 migrate_status --pending)
 status=$(migrate_status --bogus)
 [[ $status == 2 ]] || fail "an unusable invocation reports as nothing pending" "$status"
 pass "--pending reserves exit 2 for every state it cannot answer from"
+
+# Like the product runner, keep the queue off stdin so interactive migrations
+# read the caller's input without swallowing later migration entries.
+cat >"$migrations/300-reader.sh" <<'SH'
+IFS= read -r value
+printf 'reader:%s\n' "$value" >>"$TEST_RUN_LOG"
+SH
+cat >"$migrations/400-after-reader.sh" <<'SH'
+echo after-reader >>"$TEST_RUN_LOG"
+SH
+: >"$run_log"
+printf 'migration input\n' | run_migrator >/dev/null
+[[ $(<"$run_log") == $'reader:migration input\nafter-reader' ]] ||
+  fail "an overlay migration consumes caller input without draining the queue" "$(<"$run_log")"
+[[ -f $state_dir/300-reader.sh && -f $state_dir/400-after-reader.sh ]] ||
+  fail "both stdin-isolated overlay migrations are marked complete"
+pass "overlay migration queue is isolated from migration stdin"
+
+# Failure must stop the queue, not just leave the failing migration pending.
+rm -f "$state_dir/300-reader.sh" "$state_dir/400-after-reader.sh"
+: >"$run_log"
+cat >"$migrations/300-reader.sh" <<'SH'
+echo before-failure >>"$TEST_RUN_LOG"
+exit 17
+SH
+status=0
+run_migrator >/dev/null 2>&1 || status=$?
+(( status == 17 )) || fail "overlay migration preserves the first failure status" "$status"
+[[ $(<"$run_log") == "before-failure" ]] || fail "later overlay migrations run after a failure"
+[[ ! -e $state_dir/300-reader.sh && ! -e $state_dir/400-after-reader.sh ]] ||
+  fail "failed or unrun overlay migrations are marked complete"
+pass "overlay migrations stop in order without completing later work"

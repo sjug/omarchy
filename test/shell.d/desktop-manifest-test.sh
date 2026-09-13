@@ -77,6 +77,19 @@ awk '
   fail "desktop manifest carries perl in the core group"
 pass "desktop manifest carries perl in the core group for the clipboard service"
 
+# The background renderer loads Qt Multimedia for video wallpapers. Overlay
+# updates do not run the product migration that installs these dependencies.
+for package in qt6-multimedia qt6-multimedia-ffmpeg; do
+  awk -v package="$package" '
+    /^# group: / { in_group = ($3 == "core"); next }
+    { sub(/[[:space:]]*#.*$/, "") }
+    in_group && $0 == package { found = 1 }
+    END { exit !found }
+  ' "$ROOT/install/omarchy-desktop.packages" ||
+    fail "desktop manifest carries $package in the core group"
+done
+pass "desktop manifest carries the video wallpaper runtime and backend in core"
+
 # The desktop pulls a few signed packages from pkgs.omarchy.org. A plain Arch
 # host does not have their signer, so core must bootstrap the product keyring.
 awk '

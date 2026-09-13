@@ -224,6 +224,8 @@ The maintained overlay branch is append-only from the clients' perspective. Upst
 
 Changed files under `config/` are reported instead of copied because those paths are user-owned after initial setup. The update prints one `omarchy refresh config <relative-path>` command per changed default so the user can inspect and opt into each refresh.
 
+Copied user assets also remain manual in this phase. When an upstream integration changes `default/fonts/omarchy/omarchy.ttf`, update the copy at `~/.local/share/fonts/omarchy.ttf` from the checkout and run `fc-cache -f` before restarting the shell. Do not use the product's legacy-font retirement migration on an overlay: there is no packaged replacement under `/usr/share/fonts/omarchy/`. The input-device state format transition, in contrast, has an overlay migration calling the same user-only repair helper as the product, so an existing touchpad or touchscreen disable survives the new data-only loader.
+
 ## Path 2: direct `sudo pacman -Syu` attempt
 
 High-level flow:

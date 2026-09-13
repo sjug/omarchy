@@ -36,6 +36,8 @@ omacalc
 omarchy-keyring
 perl
 qt6-imageformats
+qt6-multimedia
+qt6-multimedia-ffmpeg
 quickshell
 socat
 ttf-ia-writer
