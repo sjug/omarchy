@@ -1,6 +1,6 @@
 #!/bin/bash
-# The desktop-overlay migrations that mirror the product's Omasnap, OWE,
-# Elsewhen, and mise PATH changes only do user-side wiring: packages come from
+# The desktop-overlay migrations that mirror the product's Omasnap, OWE, and
+# mise PATH changes only do user-side wiring: packages come from
 # the desktop manifest's package transaction, so each migration must fail
 # loudly when its package is absent and must never install anything itself.
 
@@ -10,7 +10,6 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 migrations="$ROOT/migrations/desktop-overlay"
 omasnap_migration="$migrations/1790272914.sh"
 owe_migration="$migrations/1790272915.sh"
-elsewhen_migration="$migrations/1790272916.sh"
 mise_migration="$migrations/1790272917.sh"
 
 test_dir=$(mktemp -d)
@@ -53,7 +52,7 @@ run_migration() {
     "$BASH" -euo pipefail "$@"
 }
 
-for migration in "$omasnap_migration" "$owe_migration" "$elsewhen_migration" "$mise_migration"; do
+for migration in "$omasnap_migration" "$owe_migration" "$mise_migration"; do
   ! grep -Eq '^[[:space:]]*(omarchy-pkg-(add|drop)|(sudo )?pacman)( |$)' "$migration" ||
     fail "overlay migrations never install or remove packages themselves" "$migration"
 done
@@ -128,7 +127,7 @@ pass "the Omasnap migration is quiet on a host without an imv config"
 
 # --- OWE -----------------------------------------------------------------
 # The hook path and unit path are package-owned; rewrite them into the test
-# tree the way the product Elsewhen test does.
+# tree so the test never touches the real system paths.
 owe_root="$test_dir/owe"
 mkdir -p "$owe_root/share" "$owe_root/units" "$test_dir/home/.config/systemd/user"
 sed -e "s|/usr/share/owe|$owe_root/share|g" -e "s|/usr/lib/systemd/user|$owe_root/units|g" \
@@ -168,42 +167,6 @@ TEST_ENABLE_STATUS=1 run_migration "$test_dir/owe-migration.sh" >"$test_dir/out"
 [[ $(readlink "$test_dir/home/.config/systemd/user/graphical-session.target.wants/owed.service") == "$owe_root/units/owed.service" ]] ||
   fail "the fallback links owed.service into graphical-session.target.wants"
 pass "the OWE migration falls back to a manual wants link when enable fails"
-
-# --- Elsewhen ------------------------------------------------------------
-packaged_root="$test_dir/packaged"
-sed "s|/usr/share/omarchy|$packaged_root|g" "$elsewhen_migration" >"$test_dir/elsewhen-migration.sh"
-plugin="$test_dir/home/.config/omarchy/plugins/omacom.elsewhen"
-
-if run_migration "$test_dir/elsewhen-migration.sh" >"$test_dir/out" 2>"$test_dir/err"; then
-  fail "the Elsewhen migration must fail when elsewhen is not installed"
-fi
-grep -q 'omarchy overlay setup packages core' "$test_dir/err" ||
-  fail "the Elsewhen migration names the repair command" "$(cat "$test_dir/err")"
-[[ ! -e $plugin && ! -L $plugin && ! -s $CALL_LOG ]] ||
-  fail "the Elsewhen migration links and places nothing without its package"
-pass "the Elsewhen migration stays pending until elsewhen is installed"
-
-mkdir -p "$packaged_root/shell/plugins/omacom.elsewhen"
-expected=$'omarchy-shell -q shell rescanPlugins\nomarchy-bar put omacom.elsewhen --before omarchy.clock'
-run_migration "$test_dir/elsewhen-migration.sh" >"$test_dir/out" || fail "the Elsewhen migration succeeds once elsewhen is installed"
-[[ $(readlink "$plugin") == "$packaged_root/shell/plugins/omacom.elsewhen" ]] || fail "the checkout-backed shell gets a user plugin link"
-[[ $(cat "$CALL_LOG") == "$expected" ]] || fail "scan and placement run in order" "$(cat "$CALL_LOG")"
-pass "the Elsewhen migration links the packaged plugin and places it before the clock"
-
-run_migration "$test_dir/elsewhen-migration.sh" >"$test_dir/out" || fail "the Elsewhen migration reruns cleanly"
-[[ $(readlink "$plugin") == "$packaged_root/shell/plugins/omacom.elsewhen" ]] || fail "the link survives a rerun"
-pass "the Elsewhen migration is idempotent"
-
-ln -sfn "$packaged_root/plugins/omacom.elsewhen" "$plugin"
-run_migration "$test_dir/elsewhen-migration.sh" >"$test_dir/out" || fail "a stranded link does not stop the migration"
-[[ $(readlink "$plugin") == "$packaged_root/shell/plugins/omacom.elsewhen" ]] ||
-  fail "a link stranded at the package's old path is re-pointed" "$(readlink "$plugin")"
-pass "the Elsewhen migration repairs the link stranded by the package's move"
-
-ln -sfn "$test_dir/custom-plugin" "$plugin"
-run_migration "$test_dir/elsewhen-migration.sh" >"$test_dir/out" || fail "a custom link does not stop the migration"
-[[ $(readlink "$plugin") == "$test_dir/custom-plugin" ]] || fail "a link the user made is preserved, even dangling"
-pass "the Elsewhen migration leaves a user-made link alone"
 
 # --- mise PATH fix ------------------------------------------------------
 checkout="$test_dir/checkout"

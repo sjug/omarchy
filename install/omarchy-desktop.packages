@@ -17,8 +17,9 @@
 # terminal, fonts, and the tools Omarchy's desktop scripts invoke directly
 # (perl: the clipboard service and menu helpers call it). omarchy-keyring pins
 # the signer for the few desktop packages supplied by the Omarchy repo.
+# elsewhen is left out on purpose: the package depends on the omarchy product
+# package, which would pull the product and its boot and storage stack.
 btop
-elsewhen
 fontconfig
 foot
 gnome-themes-extra

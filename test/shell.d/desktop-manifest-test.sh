@@ -77,10 +77,9 @@ awk '
   fail "desktop manifest carries perl in the core group"
 pass "desktop manifest carries perl in the core group for the clipboard service"
 
-# OWE renders video wallpapers and feeds the lock screen; the default bar ships
-# the Elsewhen plugin. Overlay updates do not run the product migrations that
-# install these, so the core group must carry them.
-for package in owe owe-lockfeed elsewhen; do
+# OWE renders video wallpapers and feeds the lock screen. Overlay updates do
+# not run the product migrations that install it, so the core group must carry it.
+for package in owe owe-lockfeed; do
   awk -v package="$package" '
     /^# group: / { in_group = ($3 == "core"); next }
     { sub(/[[:space:]]*#.*$/, "") }
@@ -89,7 +88,13 @@ for package in owe owe-lockfeed elsewhen; do
   ' "$ROOT/install/omarchy-desktop.packages" ||
     fail "desktop manifest carries $package in the core group"
 done
-pass "desktop manifest carries the video wallpaper renderer, lock feed, and default bar plugin in core"
+pass "desktop manifest carries the video wallpaper renderer and lock feed in core"
+
+# The elsewhen package depends on the omarchy product package, so installing it
+# would pull the product and its boot and storage stack onto an overlay host.
+! grep -qx 'elsewhen' <(sed 's/[[:space:]]*#.*$//' "$ROOT/install/omarchy-desktop.packages") ||
+  fail "desktop manifest must not carry elsewhen, which depends on the product package"
+pass "desktop manifest leaves out elsewhen, which depends on the product package"
 
 # The desktop pulls a few signed packages from pkgs.omarchy.org. A plain Arch
 # host does not have their signer, so core must bootstrap the product keyring.
