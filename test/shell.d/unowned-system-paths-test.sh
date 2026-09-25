@@ -35,6 +35,9 @@ allowed = {
   # rather than Omarchy's and are not candidates for omarchy-settings.
   "/usr/share/chromium/extensions",
   "/usr/lib/firefox/distribution",
+  # The theme-set hook is shipped by the owe package; Omarchy only registers
+  # the path with omarchy-hook-install, which no Omarchy PKGBUILD covers.
+  "/usr/share/owe/10-owe-sync",
   # Claude's extension is registered only when the user selects Claude.
   "/usr/share/google-chrome/extensions",
   "/usr/share/microsoft-edge/extensions",
