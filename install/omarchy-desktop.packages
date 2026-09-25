@@ -18,6 +18,7 @@
 # (perl: the clipboard service and menu helpers call it). omarchy-keyring pins
 # the signer for the few desktop packages supplied by the Omarchy repo.
 btop
+elsewhen
 fontconfig
 foot
 gnome-themes-extra
@@ -34,10 +35,10 @@ noto-fonts-cjk
 noto-fonts-emoji
 omacalc
 omarchy-keyring
+owe
+owe-lockfeed
 perl
 qt6-imageformats
-qt6-multimedia
-qt6-multimedia-ffmpeg
 quickshell
 socat
 ttf-ia-writer
@@ -84,9 +85,9 @@ networkmanager
 gpu-screen-recorder
 grim
 hyprpicker
+omasnap
 qrencode
 slurp
-tensaku
 tesseract
 tesseract-data-eng
 zbar

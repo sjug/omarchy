@@ -77,9 +77,10 @@ awk '
   fail "desktop manifest carries perl in the core group"
 pass "desktop manifest carries perl in the core group for the clipboard service"
 
-# The background renderer loads Qt Multimedia for video wallpapers. Overlay
-# updates do not run the product migration that installs these dependencies.
-for package in qt6-multimedia qt6-multimedia-ffmpeg; do
+# OWE renders video wallpapers and feeds the lock screen; the default bar ships
+# the Elsewhen plugin. Overlay updates do not run the product migrations that
+# install these, so the core group must carry them.
+for package in owe owe-lockfeed elsewhen; do
   awk -v package="$package" '
     /^# group: / { in_group = ($3 == "core"); next }
     { sub(/[[:space:]]*#.*$/, "") }
@@ -88,7 +89,7 @@ for package in qt6-multimedia qt6-multimedia-ffmpeg; do
   ' "$ROOT/install/omarchy-desktop.packages" ||
     fail "desktop manifest carries $package in the core group"
 done
-pass "desktop manifest carries the video wallpaper runtime and backend in core"
+pass "desktop manifest carries the video wallpaper renderer, lock feed, and default bar plugin in core"
 
 # The desktop pulls a few signed packages from pkgs.omarchy.org. A plain Arch
 # host does not have their signer, so core must bootstrap the product keyring.
@@ -128,15 +129,15 @@ awk '
 pass "desktop manifest carries ttfx in core for the screensaver"
 
 # The default screenshot action and clipboard image opener both execute
-# tensaku-edit, so capture is incomplete on a checkout-only install without it.
+# omasnap, so capture is incomplete on a checkout-only install without it.
 awk '
   /^# group: / { in_group = ($3 == "capture"); next }
   { sub(/[[:space:]]*#.*$/, "") }
-  in_group && $0 == "tensaku" { found = 1 }
+  in_group && $0 == "omasnap" { found = 1 }
   END { exit !found }
 ' "$ROOT/install/omarchy-desktop.packages" ||
-  fail "desktop manifest carries tensaku in the capture group"
-pass "desktop manifest carries tensaku in the capture group for screenshot and clipboard editing"
+  fail "desktop manifest carries omasnap in the capture group"
+pass "desktop manifest carries omasnap in the capture group for screenshot and clipboard editing"
 
 # Login integration is a named opt-in rather than part of the desktop's "all"
 # path. Keep the complete SDDM Wayland package pair together in that group.
