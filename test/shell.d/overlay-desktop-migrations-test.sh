@@ -142,7 +142,9 @@ grep -q 'omarchy overlay setup packages core' "$test_dir/err" ||
 pass "the OWE migration stays pending until owe is installed"
 
 printf '#!/bin/bash\n' >"$owe_root/share/10-owe-sync"
-chmod +x "$owe_root/share/10-owe-sync"
+# The package ships the hook as a plain 0644 file; omarchy-hook-install makes
+# its installed copy executable.
+chmod 644 "$owe_root/share/10-owe-sync"
 touch "$owe_root/units/owed.service"
 cat >"$test_dir/bin/systemctl" <<'SH'
 #!/bin/bash
