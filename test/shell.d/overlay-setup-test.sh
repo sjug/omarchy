@@ -71,6 +71,9 @@ echo 'lua' >"$fake_checkout/config/hypr/hyprland.lua"
 echo 'ini' >"$fake_checkout/config/foot/foot.ini"
 echo 'gitconfig' >"$fake_checkout/config/git/config"
 echo 'tmux' >"$fake_checkout/config/tmux/tmux.conf"
+# The product default names a cloud dictation backend that overlays never seed.
+mkdir -p "$fake_checkout/config/omarchy/defaults"
+echo 'superwhisper' >"$fake_checkout/config/omarchy/defaults/dictation"
 : >"$fake_checkout/default/fonts/omarchy/omarchy.ttf"
 : >"$fake_checkout/default/bash/env-bootstrap"
 : >"$fake_checkout/default/uwsm/env.d/10-omarchy"
@@ -87,6 +90,10 @@ done
 echo 'about branding' >"$fake_checkout/icon.txt"
 echo 'screensaver branding' >"$fake_checkout/logo.txt"
 : >"$fake_checkout/migrations/desktop-overlay/100-existing.sh"
+
+# Voxtype is installed here, so its dictation backend is the one config keeps.
+printf '#!/bin/bash\n' >"$stub_bin/voxtype"
+chmod +x "$stub_bin/voxtype"
 
 cat >"$stub_bin/sudo" <<'SH'
 #!/bin/bash
@@ -1071,6 +1078,10 @@ fi
 [[ -f $test_home/.local/state/omarchy/done/first-run-user ]] || fail "first-run provisioning is marked complete"
 pass "font, desktop-only configs, and the first-run marker land in \$HOME"
 
+[[ $(<"$test_home/.config/omarchy/defaults/dictation") == "voxtype" ]] ||
+  fail "config records an installed Voxtype instead of the cloud default" "$(<"$test_home/.config/omarchy/defaults/dictation")"
+pass "config never seeds the cloud dictation default and keeps an installed Voxtype"
+
 # --- all with existing repo, --no-session-entry, --all-configs, theme
 # --- normalization, and backup of a pre-existing uwsm env file.
 reset_run
@@ -1078,7 +1089,11 @@ mkdir -p "$test_home/.config/uwsm/env.d"
 echo 'user tweak' >"$test_home/.config/uwsm/env.d/10-omarchy"
 # shellcheck disable=SC2016
 printf '[omarchy]\nSigLevel = Optional TrustAll\nServer = https://pkgs.omarchy.org/stable/$arch\n' >"$pacman_conf"
+mkdir -p "$test_home/.config/omarchy/defaults"
+echo 'my-backend' >"$test_home/.config/omarchy/defaults/dictation"
 run_setup all --no-session-entry --all-configs --theme "Catppuccin" >/dev/null
+[[ $(<"$test_home/.config/omarchy/defaults/dictation") == "my-backend" ]] ||
+  fail "reseeding every config keeps the chosen dictation backend" "$(<"$test_home/.config/omarchy/defaults/dictation")"
 
 if grep -q "tee -a $pacman_conf" "$sudo_log"; then
   fail "an existing [omarchy] repo is left alone" "$(<"$sudo_log")"

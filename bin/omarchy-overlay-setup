@@ -1440,8 +1440,21 @@ if stage_selected config; then
     done
   fi
   while IFS= read -r -d '' config_file; do
-    omarchy-refresh-config "${config_file#"$checkout"/config/}"
+    config_path=${config_file#"$checkout"/config/}
+    # The shipped dictation default names a cloud backend, which an overlay
+    # never selects on the user's behalf; it is chosen below instead.
+    [[ $config_path != "omarchy/defaults/dictation" ]] || continue
+    omarchy-refresh-config "$config_path"
   done < <(find "${seed_roots[@]}" -type f -print0)
+
+  # Keep a dictation backend the user already chose. Otherwise record Voxtype
+  # where it is installed, so its keys are bound; without it, dictation stays
+  # unset until the user picks a backend in Setup > Defaults > Dictation.
+  dictation_default="$HOME/.config/omarchy/defaults/dictation"
+  if [[ ! -e $dictation_default ]] && omarchy-cmd-present voxtype; then
+    install -d "${dictation_default%/*}"
+    printf '%s\n' voxtype >"$dictation_default"
+  fi
 
   echo "Generating the initial theme: $theme"
   OMARCHY_THEME_HEADLESS=1 omarchy-theme-set "$theme"
