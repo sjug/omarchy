@@ -15,6 +15,14 @@ export INSTALLED_PACKAGES="$scratch/packages"
 export OMARCHY_KERNEL_LIMINE_CONF="$scratch/limine"
 export OMARCHY_KERNEL_LIMINE_DROP_INS="$scratch/drop-ins"
 export OMARCHY_KERNEL_REBUILD_MARKER="$scratch/state/1789325478"
+
+# The migration runner refuses to run on a desktop overlay; the checkout under
+# test is always treated as a product install here.
+cat > "$scratch/bin/omarchy-installation-type" <<'SH'
+#!/bin/bash
+echo product
+SH
+chmod +x "$scratch/bin/omarchy-installation-type"
 kernel="linux-omarchy"
 boot_order='BOOT_ORDER="linux-omarchy, linux-omarchy-*, *, *fallback, Snapshots"'
 

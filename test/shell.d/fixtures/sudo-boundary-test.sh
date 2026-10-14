@@ -44,6 +44,15 @@ echo "${SUDO_TEST_PLATFORM:-x86}"
 STUB
 chmod +x "$SUDO_TEST_ROOT/bin/omarchy-hw-platform"
 
+# Updates and channel changes dispatch on the installation type. The boundary
+# under test is the product's, so answer product unless a test says otherwise
+# and never read the host's install, which may be a desktop overlay.
+cat >"$SUDO_TEST_ROOT/bin/omarchy-installation-type" <<'STUB'
+#!/bin/bash
+echo "${SUDO_TEST_INSTALLATION_TYPE:-product}"
+STUB
+chmod +x "$SUDO_TEST_ROOT/bin/omarchy-installation-type"
+
 cat >"$SUDO_TEST_ROOT/mock/sudo" <<'STUB'
 #!/bin/bash
 set -euo pipefail

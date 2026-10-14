@@ -9,6 +9,15 @@ trap 'rm -rf "$test_tmp"' EXIT
 
 stub_bin="$test_tmp/bin"
 mkdir -p "$stub_bin"
+
+# The migration runner refuses to run on a desktop overlay; the checkout under
+# test is always treated as a product install here.
+cat >"$stub_bin/omarchy-installation-type" <<'SH'
+#!/bin/bash
+echo product
+SH
+chmod +x "$stub_bin/omarchy-installation-type"
+
 export TEST_STATE="$test_tmp/state"
 export TEST_CALLS="$test_tmp/calls"
 export TEST_FAULT=""

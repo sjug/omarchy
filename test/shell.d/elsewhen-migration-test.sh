@@ -10,6 +10,14 @@ trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/bin" "$test_dir/home"
 export CALL_LOG="$test_dir/calls"
 
+# The migration runner refuses to run on a desktop overlay; the checkout under
+# test is always treated as a product install here.
+cat >"$test_dir/bin/omarchy-installation-type" <<'SH'
+#!/bin/bash
+echo product
+SH
+chmod +x "$test_dir/bin/omarchy-installation-type"
+
 cat >"$test_dir/bin/omarchy-pkg-drop" <<'SH'
 #!/bin/bash
 printf 'drop %s\n' "$*" >>"$CALL_LOG"
@@ -92,7 +100,7 @@ pass "a legacy entry is renamed rather than duplicated"
 state="$test_dir/state"
 mkdir -p "$state"
 touch "$state/1789581661.sh"
-OMARCHY_MIGRATION_STATE="$state" OMARCHY_PATH="$ROOT" "$ROOT/bin/omarchy-migrate" --pending >"$test_dir/pending" || true
+OMARCHY_MIGRATION_STATE="$state" OMARCHY_PATH="$ROOT" PATH="$test_dir/bin:$ROOT/bin:$PATH" "$ROOT/bin/omarchy-migrate" --pending >"$test_dir/pending" || true
 grep -qx "$(basename "$migration")" "$test_dir/pending" || fail "the old marker must not satisfy the renamed migration" "$(cat "$test_dir/pending")"
 pass "a machine that applied the placement under its old name runs it again"
 
