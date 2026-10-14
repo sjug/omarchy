@@ -17,8 +17,6 @@
 # terminal, fonts, and the tools Omarchy's desktop scripts invoke directly
 # (perl: the clipboard service and menu helpers call it). omarchy-keyring pins
 # the signer for the few desktop packages supplied by the Omarchy repo.
-# elsewhen is left out on purpose: the package depends on the omarchy product
-# package, which would pull the product and its boot and storage stack.
 btop
 fontconfig
 foot
@@ -64,8 +62,10 @@ pipewire-pulse
 wireplumber
 
 # group: files
-# File manager (SUPER+SHIFT+F) with previews, phone/network mounts, and
-# removable-media automount (the default session autostarts udiskie).
+# File manager (SUPER+SHIFT+F) with previews, phone/network mounts,
+# removable-media automount (the default session autostarts udiskie), and
+# Disktree, the launcher's disk-usage map.
+disktree-bin
 gvfs-mtp
 gvfs-nfs
 gvfs-smb

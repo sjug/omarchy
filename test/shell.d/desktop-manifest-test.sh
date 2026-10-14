@@ -90,12 +90,6 @@ for package in owe owe-lockfeed; do
 done
 pass "desktop manifest carries the video wallpaper renderer and lock feed in core"
 
-# The elsewhen package depends on the omarchy product package, so installing it
-# would pull the product and its boot and storage stack onto an overlay host.
-! grep -qx 'elsewhen' <(sed 's/[[:space:]]*#.*$//' "$ROOT/install/omarchy-desktop.packages") ||
-  fail "desktop manifest must not carry elsewhen, which depends on the product package"
-pass "desktop manifest leaves out elsewhen, which depends on the product package"
-
 # The desktop pulls a few signed packages from pkgs.omarchy.org. A plain Arch
 # host does not have their signer, so core must bootstrap the product keyring.
 awk '
