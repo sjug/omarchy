@@ -144,7 +144,9 @@ if (( ${#artifact_stages[@]} > 0 )); then
 fi
 
 omarchy-overlay-migrate
-omarchy-hook post-update
+# omarchy update replaces PATH with a fixed system one before dispatching here.
+# Hooks run with the caller's PATH so user-installed tools resolve.
+PATH="${OMARCHY_UPDATE_USER_PATH:-$PATH}" "$omarchy_path/bin/omarchy-hook" post-update
 
 if [[ $old_head != "$current_head" ]] && git -C "$omarchy_path" merge-base --is-ancestor "$old_head" "$current_head"; then
   mapfile -t changed_configs < <(git -C "$omarchy_path" diff --name-only --diff-filter=ACMRTUXB "$old_head..$current_head" -- config/)
@@ -175,7 +177,7 @@ if [[ $old_head != "$current_head" ]] && git -C "$omarchy_path" merge-base --is-
   fi
 fi
 
-if ! omarchy-update-status; then
-  echo "Warning: could not refresh the update indicator; continuing to restart checks." >&2
-fi
+# The checkout now matches its upstream and its stages are reconciled, so there
+# is no update left to show. Clearing is best-effort and never fails the update.
+omarchy-shell -q omarchy.system-update clear
 omarchy-update-restart

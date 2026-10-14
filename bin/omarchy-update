@@ -102,7 +102,9 @@ fi
 
 installation_type=$(omarchy-installation-type)
 if [[ $installation_type == "desktop_overlay" ]]; then
-  exec omarchy-update-overlay "$@"
+  # The overlay runs its post-update hooks with the caller's PATH, as the
+  # product does below; everything else keeps the fixed PATH set above.
+  exec env OMARCHY_UPDATE_USER_PATH="$user_path" omarchy-update-overlay "$@"
 elif [[ $installation_type != "product" ]]; then
   echo "Error: unsupported Omarchy installation type '$installation_type'." >&2
   exit 1

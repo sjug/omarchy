@@ -46,6 +46,9 @@ fi
 if [[ ${0##*/} == "omarchy-shell" ]]; then
   printf '%s\n' "$*" >"$STEP_LOG.shell-args"
 fi
+if [[ ${0##*/} == "omarchy-update-overlay" ]]; then
+  printf '%s\n' "${OMARCHY_UPDATE_USER_PATH:-}" >"$STEP_LOG.overlay-user-path"
+fi
 [[ ${FAILING_STEP:-} != "${0##*/}" ]] || exit 1
 STUB
   chmod +x "$stub_bin/$step"
@@ -127,6 +130,9 @@ TEST_INSTALLATION_TYPE=desktop_overlay run_update -y || fail "a desktop overlay 
 [[ $(steps_run) == $'omarchy-update-lock\nomarchy-installation-type\nomarchy-update-overlay' ]] ||
   fail "desktop-overlay routing does not stop before the product sequence" "$(steps_run)"
 pass "top-level update dispatches desktop overlays immediately after taking the shared lock"
+[[ $(<"$test_tmp/steps.overlay-user-path") == "$stub_bin:"* ]] ||
+  fail "desktop-overlay dispatch drops the caller's PATH for its hooks" "$(<"$test_tmp/steps.overlay-user-path")"
+pass "desktop-overlay dispatch hands the caller's PATH to the overlay updater"
 
 # Migrations ship with the packages the upgrade installs and are written against
 # them. Running them against what is still on disk is the failure this ordering

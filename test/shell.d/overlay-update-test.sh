@@ -15,6 +15,7 @@ git_log="$test_tmp/git.log"
 timeout_log="$test_tmp/timeout.log"
 script_log="$test_tmp/script.log"
 lock_log="$test_tmp/lock.log"
+hook_path_log="$test_tmp/hook-path.log"
 state_dir="$test_tmp/migration-state"
 test_home="$test_tmp/home with spaces"
 mkdir -p "$stub_bin" "$checkout/bin"
@@ -45,8 +46,7 @@ for command in \
   omarchy-update-confirm \
   omarchy-overlay-setup \
   omarchy-overlay-migrate \
-  omarchy-hook \
-  omarchy-update-status \
+  omarchy-shell \
   omarchy-update-restart; do
   write_log_stub "$command"
 done
@@ -184,6 +184,16 @@ printf 'reexec\tmarker=%s\told=%s\targs=%s\n' \
 SH
 chmod +x "$checkout/bin/omarchy-update"
 
+# Hooks come from the checkout itself, not from whatever PATH resolves.
+cat >"$checkout/bin/omarchy-hook" <<'SH'
+#!/bin/bash
+printf '%s' "${0##*/}" >>"$TEST_CALL_LOG"
+for arg in "$@"; do printf '\t%s' "$arg" >>"$TEST_CALL_LOG"; done
+printf '\n' >>"$TEST_CALL_LOG"
+printf '%s\n' "$PATH" >"$TEST_HOOK_PATH_LOG"
+SH
+chmod +x "$checkout/bin/omarchy-hook"
+
 run_overlay_update() {
   : >"$call_log"
   : >"$git_log"
@@ -197,6 +207,7 @@ run_overlay_update() {
     TEST_TIMEOUT_LOG="$timeout_log" \
     TEST_SCRIPT_LOG="$script_log" \
     TEST_LOCK_LOG="$lock_log" \
+    TEST_HOOK_PATH_LOG="$hook_path_log" \
     TEST_LOCK_HELD="${TEST_LOCK_HELD:-1}" \
     TEST_GIT_STATE="${TEST_GIT_STATE:-clean}" \
     TEST_CHANGED_CONFIGS="${TEST_CHANGED_CONFIGS:-0}" \
@@ -236,7 +247,7 @@ OMARCHY_OVERLAY_UPDATE_REEXECUTED=1 \
   TEST_CHANGED_CONFIGS=1 \
   run_overlay_update -y >"$test_tmp/out"
 
-expected=$'omarchy-installation-type\nomarchy-overlay-setup\tartifacts\t--check\tlock\tdisplay-manager\nomarchy-overlay-setup\tpackages\tcore\taudio\tfiles\tconnectivity\tcapture\tpower\tdisplay-manager\nomarchy-overlay-setup\tartifacts\tlock\tdisplay-manager\nomarchy-overlay-migrate\nomarchy-hook\tpost-update\nomarchy-update-status\nomarchy-update-restart'
+expected=$'omarchy-installation-type\nomarchy-overlay-setup\tartifacts\t--check\tlock\tdisplay-manager\nomarchy-overlay-setup\tpackages\tcore\taudio\tfiles\tconnectivity\tcapture\tpower\tdisplay-manager\nomarchy-overlay-setup\tartifacts\tlock\tdisplay-manager\nomarchy-overlay-migrate\nomarchy-hook\tpost-update\nomarchy-shell\t-q\tomarchy.system-update\tclear\nomarchy-update-restart'
 [[ $(<"$call_log") == "$expected" ]] || fail "overlay update runs only its agreed stage-aware sequence" "$(<"$call_log")"
 grep -q 'omarchy refresh config hypr/hyprland.lua' "$test_tmp/out" || fail "changed Hyprland config gets a manual refresh command" "$(<"$test_tmp/out")"
 grep -q 'omarchy refresh config foot/foot.ini' "$test_tmp/out" || fail "changed Foot config gets a manual refresh command" "$(<"$test_tmp/out")"
@@ -290,13 +301,15 @@ GIT_SSH_VARIANT=plink GIT_SSH_COMMAND='plink -batch' TEST_EXPECT_SSH_COMMAND='pl
 GIT_SSH=/custom/ssh-wrapper TEST_EXPECT_SSH_COMMAND='' run_overlay_update -y >/dev/null
 pass "fetch retains configured OpenSSH options and leaves alternate SSH transports intact"
 
-TEST_FAILING_STEP=omarchy-update-status run_overlay_update -y >"$test_tmp/status-failure.out" 2>"$test_tmp/status-failure.err" ||
-  fail "an indicator refresh failure turns a completed overlay package update into a failed update"
-grep -q $'^omarchy-update-restart$' "$call_log" ||
-  fail "an indicator refresh failure skips overlay restart checks" "$(<"$call_log")"
-grep -q 'continuing to restart checks' "$test_tmp/status-failure.err" ||
-  fail "an overlay indicator failure is not reported as a non-blocking warning" "$(<"$test_tmp/status-failure.err")"
-pass "overlay update preserves completed work and restart checks when indicator refresh fails"
+# omarchy update hands over a fixed system PATH and the caller's own in
+# OMARCHY_UPDATE_USER_PATH; hooks get the caller's, other steps keep the fixed one.
+OMARCHY_UPDATE_USER_PATH="$test_tmp/user-tools:$stub_bin:$PATH" run_overlay_update -y >/dev/null
+[[ $(<"$hook_path_log") == "$test_tmp/user-tools:"* ]] ||
+  fail "overlay post-update hooks lose the caller's PATH" "$(<"$hook_path_log")"
+run_overlay_update -y >/dev/null
+[[ $(<"$hook_path_log") == "$stub_bin:"* ]] ||
+  fail "a direct overlay update without a handed-over PATH changes the hooks' PATH" "$(<"$hook_path_log")"
+pass "overlay post-update hooks run with the caller's PATH"
 
 TEST_GIT_STATE=behind run_overlay_update -y >/dev/null
 grep -Fx -- "-C $checkout merge --ff-only origin/quattro" "$git_log" >/dev/null || fail "behind overlay checkout is fast-forwarded" "$(<"$git_log")"
