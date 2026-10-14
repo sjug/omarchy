@@ -1,6 +1,6 @@
 #!/bin/bash
-# The desktop-overlay migrations that mirror the product's Omasnap, OWE, and
-# mise PATH changes only do user-side wiring: packages come from
+# The desktop-overlay migrations that mirror product changes only do user-side
+# wiring: packages come from
 # the desktop manifest's package transaction, so each migration must fail
 # loudly when its package is absent and must never install anything itself.
 
@@ -11,13 +11,21 @@ migrations="$ROOT/migrations/desktop-overlay"
 omasnap_migration="$migrations/1790272914.sh"
 owe_migration="$migrations/1790272915.sh"
 mise_migration="$migrations/1790272917.sh"
+elsewhen_migration="$migrations/1791987965.sh"
+dictation_migration="$migrations/1791987966.sh"
+layouts_migration="$migrations/1791987967.sh"
+keyboard_widget_migration="$migrations/1791987968.sh"
+input_method_migration="$migrations/1791987969.sh"
+scrollbars_migration="$migrations/1791987970.sh"
+secret_portal_migration="$migrations/1791987971.sh"
+wallpaper_migration="$migrations/1791987972.sh"
 
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/bin" "$test_dir/home"
 export CALL_LOG="$test_dir/calls"
 
-for stub in omarchy-pkg-add omarchy-pkg-drop omarchy-hook-install omarchy-shell omarchy-bar systemctl omasnap; do
+for stub in omarchy-pkg-add omarchy-pkg-drop omarchy-hook-install omarchy-shell omarchy-bar omarchy-input-method hyprctl systemctl omasnap; do
   cat >"$test_dir/bin/$stub" <<SH
 #!/bin/bash
 echo "$stub \$*" >>"\$CALL_LOG"
@@ -29,7 +37,11 @@ cat >"$test_dir/bin/omarchy-pkg-present" <<'SH'
 SH
 cat >"$test_dir/bin/omarchy-cmd-present" <<'SH'
 #!/bin/bash
-[[ ${TEST_MISE_PRESENT:-0} == 1 ]]
+if [[ $1 == "mise" ]]; then
+  [[ ${TEST_MISE_PRESENT:-0} == 1 ]]
+else
+  [[ -n ${TEST_PRESENT_COMMANDS:-} ]] && grep -qx "$1" <<<"$TEST_PRESENT_COMMANDS"
+fi
 SH
 cat >"$test_dir/bin/omarchy-overlay-stages" <<'SH'
 #!/bin/bash
@@ -45,14 +57,16 @@ for tool in grep sed mv rm ln mkdir readlink date tr printf; do
   ln -s "$(command -v "$tool")" "$test_dir/tools/$tool"
 done
 
-# Migrations run under the runner's strict mode; keep the same flags here.
+# Migrations run under the runner's strict mode; keep the same flags here. The
+# XDG base directories would otherwise point the migrations at the real home.
 run_migration() {
   : >"$CALL_LOG"
-  HOME="$test_dir/home" OMARCHY_PATH="${OMARCHY_PATH_OVERRIDE:-$ROOT}" PATH="${TEST_PATH:-$test_dir/bin:$ROOT/bin:$PATH}" \
+  env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME \
+    HOME="$test_dir/home" OMARCHY_PATH="${OMARCHY_PATH_OVERRIDE:-$ROOT}" PATH="${TEST_PATH:-$test_dir/bin:$ROOT/bin:$PATH}" \
     "$BASH" -euo pipefail "$@"
 }
 
-for migration in "$omasnap_migration" "$owe_migration" "$mise_migration"; do
+for migration in "$migrations"/*.sh; do
   ! grep -Eq '^[[:space:]]*(omarchy-pkg-(add|drop)|(sudo )?pacman)( |$)' "$migration" ||
     fail "overlay migrations never install or remove packages themselves" "$migration"
 done
@@ -190,3 +204,172 @@ fi
 [[ $(cat "$CALL_LOG") == "product mise migration" ]] ||
   fail "the product PATH fix runs under strict mode and stops at its first failure" "$(cat "$CALL_LOG")"
 pass "the mise migration reuses the product PATH fix under strict error handling"
+
+# --- Elsewhen -------------------------------------------------------------
+shell_json="$test_dir/home/.config/omarchy/shell.json"
+mkdir -p "${shell_json%/*}"
+printf '%s\n' '{"bar":{"layout":{"center":[{"id":"omarchy.clock"}]}}}' >"$shell_json"
+run_migration "$elsewhen_migration" >/dev/null
+[[ $(<"$CALL_LOG") == $'omarchy-shell -q shell rescanPlugins\nomarchy-bar put omarchy.elsewhen --after omarchy.clock' ]] ||
+  fail "the Elsewhen migration rescans plugins and puts the clock's neighbour on the bar" "$(<"$CALL_LOG")"
+pass "the Elsewhen migration puts the built-in world clock after the clock"
+
+printf '%s\n' '{"bar":{"layout":{"center":[{"id":"omarchy.clock"},{"id":"omarchy.elsewhen"}]}}}' >"$shell_json"
+run_migration "$elsewhen_migration" >/dev/null
+! grep -q '^omarchy-bar ' "$CALL_LOG" || fail "the Elsewhen migration moves a world clock already on the bar" "$(<"$CALL_LOG")"
+pass "the Elsewhen migration leaves a world clock already on the bar where it is"
+
+printf '%s\n' '{"bar":{"layout":{"center":[{"id":"omarchy.clock"},{"id":"omacom.elsewhen","cities":["Tokyo"]}],"right":["omacom.elsewhen"]},"centerAnchor":"omacom.elsewhen"},"disabledPlugins":["omacom.elsewhen"]}' >"$shell_json"
+run_migration "$elsewhen_migration" >/dev/null
+! grep -q '^omarchy-bar ' "$CALL_LOG" || fail "the Elsewhen migration duplicates a legacy world clock entry" "$(<"$CALL_LOG")"
+jq -e '.bar.layout.center[1] == {"id":"omarchy.elsewhen","cities":["Tokyo"]}' "$shell_json" >/dev/null ||
+  fail "a legacy world clock object keeps its place and settings under the new id" "$(<"$shell_json")"
+jq -e '.bar.layout.right == ["omarchy.elsewhen"] and .bar.centerAnchor == "omarchy.elsewhen" and .disabledPlugins == ["omarchy.elsewhen"]' "$shell_json" >/dev/null ||
+  fail "legacy world clock references are renamed everywhere" "$(<"$shell_json")"
+! grep -q 'omacom' "$shell_json" || fail "no legacy world clock id remains" "$(<"$shell_json")"
+pass "the Elsewhen migration renames a legacy world clock in place, settings included"
+
+printf '%s\n' '{"bar":{"layout":{"center":[{"id":"omarchy.clock"}]}},"disabledPlugins":["omacom.elsewhen"]}' >"$shell_json"
+run_migration "$elsewhen_migration" >/dev/null
+! grep -q '^omarchy-bar ' "$CALL_LOG" || fail "the Elsewhen migration enables a world clock the user turned off" "$(<"$CALL_LOG")"
+jq -e '.disabledPlugins == ["omarchy.elsewhen"]' "$shell_json" >/dev/null || fail "a turned-off world clock stays off under the new id" "$(<"$shell_json")"
+pass "the Elsewhen migration leaves a world clock the user turned off"
+
+# --- Dictation backend ----------------------------------------------------
+dictation_config="$test_dir/home/.config/omarchy/defaults/dictation"
+run_migration "$dictation_migration" >/dev/null
+[[ ! -e $dictation_config ]] || fail "the dictation migration picks a backend without Voxtype"
+[[ ! -s $CALL_LOG ]] || fail "the dictation migration reloads Hyprland without Voxtype" "$(<"$CALL_LOG")"
+TEST_PRESENT_COMMANDS=voxtype run_migration "$dictation_migration" >"$test_dir/out"
+[[ $(<"$dictation_config") == "voxtype" ]] || fail "an existing Voxtype setup keeps Voxtype as its backend"
+grep -qx 'hyprctl reload' "$CALL_LOG" || fail "the dictation migration rebinds the keys" "$(<"$CALL_LOG")"
+grep -q "do not run 'omarchy refresh config omarchy/defaults/dictation'" "$test_dir/out" ||
+  fail "the dictation migration warns against refreshing the default away" "$(<"$test_dir/out")"
+printf 'something-else\n' >"$dictation_config"
+TEST_PRESENT_PACKAGES=voxtype-bin run_migration "$dictation_migration" >/dev/null
+[[ $(<"$dictation_config") == "something-else" ]] || fail "the dictation migration overrides a chosen backend"
+pass "the dictation migration keeps Voxtype for its users and never overrides a choice"
+
+# --- Workspace layouts ----------------------------------------------------
+layouts_dir="$test_dir/home/.local/state/omarchy/workspace-layouts"
+mkdir -p "$layouts_dir"
+printf '%s\n' 'hl.workspace_rule({ workspace = "2", layout = "scrolling" })' >"$layouts_dir/2.lua"
+printf '%s\n' 'hl.workspace_rule({ workspace = "-98", layout = "monocle" })' >"$layouts_dir/-98.lua"
+run_migration "$layouts_migration" >/dev/null
+[[ ! -e $layouts_dir/-98.lua ]] || fail "a named workspace's saved layout is dropped"
+[[ $(<"$layouts_dir/2.lua") == 'o.workspace_mode({ workspace = "2", mode = "scrolling" })' ]] ||
+  fail "a saved layout becomes a workspace mode" "$(<"$layouts_dir/2.lua")"
+grep -qx 'hyprctl reload' "$CALL_LOG" || fail "dropping a named layout reloads Hyprland" "$(<"$CALL_LOG")"
+run_migration "$layouts_migration" >/dev/null
+[[ $(<"$layouts_dir/2.lua") == 'o.workspace_mode({ workspace = "2", mode = "scrolling" })' ]] ||
+  fail "the layout migration is idempotent" "$(<"$layouts_dir/2.lua")"
+[[ ! -s $CALL_LOG ]] || fail "a rerun with nothing to drop reloads Hyprland" "$(<"$CALL_LOG")"
+pass "the layout migration drops named workspaces' layouts and saves the rest as modes"
+
+# --- Keyboard layout widget ----------------------------------------------
+run_migration "$keyboard_widget_migration" >/dev/null
+[[ $(<"$CALL_LOG") == "omarchy-bar move omarchy.keyboard-layout --from-section center --section right --index 0" ]] ||
+  fail "the keyboard layout widget leads the right-hand cluster" "$(<"$CALL_LOG")"
+cat >"$test_dir/bin/omarchy-bar" <<'SH'
+#!/bin/bash
+echo "omarchy-bar $*" >>"$CALL_LOG"
+exit 1
+SH
+run_migration "$keyboard_widget_migration" >/dev/null || fail "a bar that cannot move the widget fails the migration"
+cat >"$test_dir/bin/omarchy-bar" <<'SH'
+#!/bin/bash
+echo "omarchy-bar $*" >>"$CALL_LOG"
+SH
+pass "the keyboard layout widget moves from the center only, best-effort"
+
+# --- Input-method defaults ------------------------------------------------
+# The shipped unit path is package-owned; rewrite it into the test tree.
+im_units="$test_dir/im-units"
+mkdir -p "$im_units"
+sed "s|/usr/lib/systemd/user|$im_units|g" "$input_method_migration" >"$test_dir/input-method-migration.sh"
+user_unit="$test_dir/home/.config/systemd/user/omarchy-fcitx5.service"
+mkdir -p "${user_unit%/*}"
+
+run_migration "$test_dir/input-method-migration.sh" >/dev/null
+[[ ! -s $CALL_LOG ]] || fail "input-method defaults apply without fcitx5" "$(<"$CALL_LOG")"
+TEST_PRESENT_COMMANDS=fcitx5 run_migration "$test_dir/input-method-migration.sh" >/dev/null
+[[ ! -s $CALL_LOG ]] || fail "input-method defaults apply where fcitx5 runs outside omarchy-fcitx5.service" "$(<"$CALL_LOG")"
+pass "input-method defaults skip hosts that do not run fcitx5 through Omarchy's unit"
+
+git -C "$ROOT" show 28ceaae70:default/systemd/user/omarchy-fcitx5.service >"$user_unit"
+TEST_PRESENT_COMMANDS=fcitx5 run_migration "$test_dir/input-method-migration.sh" >/dev/null
+cmp -s "$user_unit" "$ROOT/default/systemd/user/omarchy-fcitx5.service" ||
+  fail "an unmodified copy of the previous unit becomes the current one"
+grep -qx 'systemctl --user daemon-reload' "$CALL_LOG" || fail "a replaced unit is reloaded" "$(<"$CALL_LOG")"
+grep -qx 'omarchy-input-method configure --defaults' "$CALL_LOG" || fail "the input-method defaults are written" "$(<"$CALL_LOG")"
+printf '# mine\n' >>"$user_unit"
+cp "$user_unit" "$test_dir/custom-unit"
+TEST_PRESENT_COMMANDS=fcitx5 run_migration "$test_dir/input-method-migration.sh" >/dev/null
+cmp -s "$user_unit" "$test_dir/custom-unit" || fail "a customised unit is replaced"
+! grep -q 'daemon-reload' "$CALL_LOG" || fail "an untouched unit triggers a reload" "$(<"$CALL_LOG")"
+! grep -Eq '^omarchy-pkg-(add|drop) ' "$CALL_LOG" || fail "input-method defaults install engines" "$(<"$CALL_LOG")"
+pass "input-method defaults refresh only Omarchy's own previous unit and install no engines"
+
+# --- Chromium overlay scrollbars ----------------------------------------
+printf '%s\n' '--ozone-platform=wayland' '--enable-features=TouchpadOverscrollHistoryNavigation' >"$test_dir/home/.config/chromium-flags.conf"
+printf '%s' '--ozone-platform=wayland' >"$test_dir/home/.config/brave-origin-flags.conf"
+run_migration "$scrollbars_migration" >/dev/null
+grep -qx -- '--enable-features=TouchpadOverscrollHistoryNavigation,OverlayScrollbar' "$test_dir/home/.config/chromium-flags.conf" ||
+  fail "an existing feature list gains overlay scrollbars" "$(<"$test_dir/home/.config/chromium-flags.conf")"
+[[ $(<"$test_dir/home/.config/brave-origin-flags.conf") == $'--ozone-platform=wayland\n--enable-features=OverlayScrollbar' ]] ||
+  fail "a flags file without features gets its own line" "$(<"$test_dir/home/.config/brave-origin-flags.conf")"
+run_migration "$scrollbars_migration" >/dev/null
+(( $(grep -c OverlayScrollbar "$test_dir/home/.config/chromium-flags.conf") == 1 )) || fail "the scrollbar migration is idempotent"
+pass "Chromium-family flags gain overlay scrollbars once"
+
+# --- Secret portal --------------------------------------------------------
+portal_backends="$test_dir/portals"
+mkdir -p "$portal_backends"
+sed "s|/usr/share/xdg-desktop-portal/portals|$portal_backends|g" "$secret_portal_migration" >"$test_dir/secret-portal-migration.sh"
+portal_config="$test_dir/home/.config/xdg-desktop-portal/hyprland-portals.conf"
+run_migration "$test_dir/secret-portal-migration.sh" >/dev/null
+[[ ! -e $portal_config ]] || fail "the Secret portal is configured without GNOME Keyring's backend"
+touch "$portal_backends/gnome-keyring.portal"
+run_migration "$test_dir/secret-portal-migration.sh" >/dev/null
+cmp -s "$portal_config" "$ROOT/config/xdg-desktop-portal/hyprland-portals.conf" ||
+  fail "the Secret portal routes to GNOME Keyring where its backend is installed"
+printf 'mine\n' >"$portal_config"
+run_migration "$test_dir/secret-portal-migration.sh" >/dev/null
+[[ $(<"$portal_config") == "mine" ]] || fail "an existing portal configuration is replaced"
+pass "the Secret portal reaches GNOME Keyring only where the host has its backend"
+
+# --- Renumbered wallpaper -------------------------------------------------
+checkout="$test_dir/wallpaper-checkout"
+current="$test_dir/home/.local/state/omarchy/current"
+mkdir -p "$checkout/themes/tokyo-night/backgrounds" "$current/theme/backgrounds"
+printf 'quattro' >"$checkout/themes/tokyo-night/backgrounds/2-quattro.webp"
+printf 'liftoff' >"$checkout/themes/tokyo-night/backgrounds/0-liftoff.webp"
+printf 'quattro' >"$current/theme/backgrounds/1-quattro.webp"
+printf 'tokyo-night\n' >"$current/theme.name"
+ln -sfn "$current/theme/backgrounds/1-quattro.webp" "$current/background"
+OMARCHY_PATH_OVERRIDE="$checkout" run_migration "$wallpaper_migration" >/dev/null
+[[ $(readlink "$current/background") == "$current/theme/backgrounds/2-quattro.webp" ]] ||
+  fail "the wallpaper follows its renumbered file" "$(readlink "$current/background")"
+[[ $(<"$current/theme/backgrounds/2-quattro.webp") == "quattro" ]] || fail "the renumbered file is staged"
+grep -qx "omarchy-shell -q background set $current/theme/backgrounds/2-quattro.webp" "$CALL_LOG" ||
+  fail "the running shell shows the repaired wallpaper" "$(<"$CALL_LOG")"
+OMARCHY_PATH_OVERRIDE="$checkout" run_migration "$wallpaper_migration" >/dev/null
+[[ ! -s $CALL_LOG ]] || fail "a wallpaper whose file still exists is left alone" "$(<"$CALL_LOG")"
+printf 'other' >"$checkout/themes/tokyo-night/backgrounds/3-quattro.webp"
+ln -sfn "$current/theme/backgrounds/1-quattro.webp" "$current/background"
+OMARCHY_PATH_OVERRIDE="$checkout" run_migration "$wallpaper_migration" >/dev/null
+[[ $(readlink "$current/background") == "$current/theme/backgrounds/1-quattro.webp" ]] ||
+  fail "an ambiguous renumbering guesses a wallpaper"
+pass "the wallpaper follows a renumbered theme background only when the match is unambiguous"
+
+# --- Agent skill links ----------------------------------------------------
+skill_migration="$migrations/1791987973.sh"
+mkdir -p "$test_dir/home/.claude/skills" "$test_dir/home/.codex/skills" "$test_dir/home/.agents/skills"
+ln -sfn /old/checkout/default/omarchy-skill "$test_dir/home/.claude/skills/omarchy"
+ln -sfn /somewhere/else/omarchy "$test_dir/home/.codex/skills/omarchy"
+run_migration "$skill_migration" >/dev/null
+[[ $(readlink "$test_dir/home/.claude/skills/omarchy") == "$ROOT/default/agents/skills/omarchy" ]] ||
+  fail "a link to the old skill location follows the skill" "$(readlink "$test_dir/home/.claude/skills/omarchy")"
+[[ $(readlink "$test_dir/home/.codex/skills/omarchy") == "/somewhere/else/omarchy" ]] || fail "a user's own skill link is replaced"
+[[ ! -e $test_dir/home/.agents/skills/omarchy && ! -L $test_dir/home/.agents/skills/omarchy ]] || fail "a missing skill link is created"
+pass "agent skill links that point at the old location follow the skill, and no others change"
