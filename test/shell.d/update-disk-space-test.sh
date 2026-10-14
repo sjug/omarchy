@@ -9,11 +9,10 @@ unset OMARCHY_UPDATE_FORCE
 unset TEST_AVAILABLE_BYTES
 unset TEST_DF_INVALID
 
-test_tmp=$(mktemp -d)
-trap 'rm -rf "$test_tmp"' EXIT
-
-stub_bin="$test_tmp/bin"
-test_home="$test_tmp/home"
+source "$SHELL_TEST_DIR/fixtures/sudo-boundary-test.sh"
+test_tmp="$boundary_tmp"
+stub_bin="$SUDO_TEST_ROOT/bin"
+test_home="$SUDO_TEST_HOME"
 runtime_dir="$test_tmp/runtime"
 snapshot_marker="$test_tmp/snapshot"
 gum_marker="$test_tmp/gum"
@@ -21,10 +20,21 @@ pkg_prune_marker="$test_tmp/pkg-prune"
 storage_conf="$test_tmp/storage.conf"
 sudo_marker="$test_tmp/sudo"
 lvs_marker="$test_tmp/lvs"
-mkdir -p "$stub_bin" "$test_home" "$runtime_dir"
+# Direct helper checks record their sudo calls; full updates keep the
+# boundary harness's mock sudo in $stub_bin.
+requirement_bin="$test_tmp/requirement-bin"
+mkdir -p "$runtime_dir" "$requirement_bin"
+for command in omarchy-update omarchy-update-requires-free-space omarchy-update-confirm omarchy-i18n; do
+  rm -f "$stub_bin/$command"
+  copy_boundary_file "bin/$command"
+done
+# The confirmation prompt reads its text from the English catalog.
+mkdir -p "$SUDO_TEST_ROOT/default/i18n/en"
+cp "$ROOT/default/i18n/en/cli.json" "$SUDO_TEST_ROOT/default/i18n/en/cli.json"
+cp "$ROOT/default/i18n/plural.jq" "$ROOT/default/i18n/locales.json" "$SUDO_TEST_ROOT/default/i18n/"
 
 run_update() {
-  HOME="$test_home" \
+  SUDO_TEST_HOME="$test_home" \
   XDG_RUNTIME_DIR="$runtime_dir" \
   PATH="$stub_bin:$ROOT/bin:$PATH" \
   LC_ALL=C \
@@ -39,14 +49,13 @@ run_update() {
   SNAPSHOT_MARKER="$snapshot_marker" \
   GUM_MARKER="$gum_marker" \
   PKG_PRUNE_MARKER="$pkg_prune_marker" \
-  SUDO_MARKER="$sudo_marker" \
   LVS_MARKER="$lvs_marker" \
   GUM_STATUS=${GUM_STATUS:-1} \
-    "$ROOT/bin/omarchy-update" "$@"
+    "$SUDO_TEST_ROOT/bin/omarchy-update" "$@"
 }
 
 run_requirement_check() {
-  PATH="$stub_bin:$ROOT/bin:$PATH" \
+  PATH="$requirement_bin:$stub_bin:$ROOT/bin:$PATH" \
   LC_ALL=C \
   OMARCHY_STORAGE_CONF_PATH="$storage_conf" \
   TEST_AVAILABLE_BYTES=${TEST_AVAILABLE_BYTES:-$((20 * 1024 * 1024 * 1024))} \
@@ -70,6 +79,7 @@ write_stub() {
   local name="$1"
   local body="$2"
 
+  rm -f "$stub_bin/$name"
   cat >"$stub_bin/$name" <<SH
 #!/bin/bash
 $body
@@ -95,9 +105,12 @@ write_stub omarchy-snapshot '
 touch "$SNAPSHOT_MARKER"
 exit 0'
 
-write_stub sudo '
+cat >"$requirement_bin/sudo" <<'SH'
+#!/bin/bash
 printf "%s\n" "$*" >>"$SUDO_MARKER"
-exec "$@"'
+exec "$@"
+SH
+chmod +x "$requirement_bin/sudo"
 
 write_stub lvs '
 printf "%s|%s\n" "$LC_ALL" "$*" >>"$LVS_MARKER"
@@ -124,6 +137,7 @@ for command in \
   omarchy-update-aur-pkgs \
   omarchy-update-mise \
   omarchy-update-orphan-pkgs \
+  omarchy-update-boot \
   omarchy-hook \
   omarchy-update-analyze-logs \
   omarchy-shell \
@@ -178,7 +192,7 @@ pass "disk-space threshold includes the exact boundary"
 
 rm -f "$snapshot_marker" "$gum_marker"
 GUM_STATUS=0 TEST_AVAILABLE_BYTES=$((10 * 1024 * 1024 * 1024)) run_update >/dev/null
-grep -q "confirm Continue with update?" "$gum_marker" ||
+grep -q "confirm --affirmative Yes --negative No Continue with update?" "$gum_marker" ||
   fail "interactive update with enough space uses the normal confirmation prompt"
 [[ -f $snapshot_marker ]] || fail "accepting the normal confirmation starts the update"
 pass "interactive update keeps the normal confirmation prompt when space is sufficient"

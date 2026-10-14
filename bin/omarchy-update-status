@@ -1,22 +1,10 @@
 #!/bin/bash
 
-# omarchy:summary=Refresh the shell update status
+# omarchy:summary=Clear the shell update indicator after an update
 # omarchy:hidden=true
 
-set -e
-
-update_status=0
-omarchy-update-available >/dev/null || update_status=$?
-
-case "$update_status" in
-  0)
-    omarchy-shell -q omarchy.system-update refresh
-    ;;
-  1)
-    omarchy-shell -q omarchy.system-update clear
-    ;;
-  *)
-    echo "Could not determine Omarchy update status; leaving the indicator unchanged." >&2
-    exit "$update_status"
-    ;;
-esac
+# omarchy-update now clears the indicator itself. This stays for an update
+# started by an older omarchy-update: its pipeline was parsed before the
+# upgrade replaced it, and still calls this right after a full upgrade that
+# went through, so there is nothing left for the indicator to show.
+omarchy-shell -q omarchy.system-update clear
