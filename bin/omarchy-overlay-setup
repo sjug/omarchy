@@ -1425,6 +1425,16 @@ if stage_selected config; then
   install -Dm644 "$checkout/default/fonts/omarchy/omarchy.ttf" "$HOME/.local/share/fonts/omarchy.ttf"
   fc-cache -f >/dev/null
 
+  # The product installs these under /etc/xkb. An overlay supplies the same
+  # option through libxkbcommon's user include path, preserving custom files.
+  for xkb_file in rules/evdev symbols/omarchy; do
+    xkb_target="$HOME/.config/xkb/$xkb_file"
+    if [[ ! -e $xkb_target && ! -L $xkb_target ]]; then
+      install -d "${xkb_target%/*}"
+      ln -s "$checkout/etc/xkb/$xkb_file" "$xkb_target"
+    fi
+  done
+
   branding_dir="$HOME/.config/omarchy/branding"
   install -d "$branding_dir"
   if [[ ! -e $branding_dir/about.txt ]]; then
