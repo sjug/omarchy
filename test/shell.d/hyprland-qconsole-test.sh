@@ -12,13 +12,18 @@ require_command lua
 # themselves rather than leaving the pass below to run regardless.
 OMARCHY_PATH="$ROOT" lua - <<'LUA' || fail "the console is a centered panel until a second app joins it"
 local rules, handlers = {}, {}
+local launches = {}
 local monitor = nil
 local workspace = nil
 
 hl = {
   config = function() end,
   animation = function() end,
-  workspace_rule = function(rule) table.insert(rules, rule) end,
+  workspace_rule = function(rule)
+    assert(rule.on_created_empty == nil, "console rules must not use Hyprland's deprecated on_created_empty")
+    table.insert(rules, rule)
+  end,
+  exec_cmd = function(command) table.insert(launches, command) end,
   on = function(event, callback) handlers[event] = callback end,
   get_active_monitor = function() return monitor end,
   get_workspace = function() return workspace end,
@@ -46,12 +51,21 @@ local function gaps()
 end
 
 -- Config loads before the outputs are up, so the first pass has no monitor to
--- read. It still has to leave a rule behind, or the console would open unseeded.
+-- read. It still has to leave a rule behind, and must not launch the agent yet.
 assert(#rules > 0, "console is ruled even before a monitor can be read")
-assert(current().on_created_empty:find("omarchy%-agent"), "console is seeded with the default agent")
-assert(current().on_created_empty:find("^%[workspace special:qconsole silent%]"),
-  "the seed is pinned to the console rather than trusting the spawn to inherit it")
 assert(current().workspace == "special:qconsole")
+assert(#launches == 0, "loading the config does not launch the agent")
+
+local created = assert(handlers["workspace.created"], "the console seeds through the workspace-created event")
+created(nil)
+created({})
+created({ name = "1", is_empty = true })
+created({ name = "special:other", is_empty = true })
+created({ name = "special:qconsole", is_empty = false })
+assert(#launches == 0, "other workspaces and an already populated console are not seeded")
+created({ name = "special:qconsole", is_empty = true })
+assert(#launches == 1 and launches[1] == "[workspace special:qconsole silent] omarchy-agent",
+  "an empty new console launches one agent pinned to that workspace")
 
 local function rescale(height, scale, bar)
   monitor = { width = 1920, height = height, scale = scale, transform = 0, reserved = { top = bar, bottom = 0, left = 0, right = 0 } }
@@ -71,7 +85,7 @@ assert(rescale(1440, 1, 0) == 720, "a monitor with nothing reserved")
 local final = current()
 assert(final.gaps_out.top == 0, "the console stays flush with the top, the way a drop-down arrives")
 assert(final.gaps_out.left == final.gaps_out.right, "the panel is centered")
-assert(final.on_created_empty:find("omarchy%-agent"), "refitting keeps the console seeded")
+assert(#launches == 1, "refitting does not launch another agent")
 assert(final.no_border == true, "the console drops the active window border")
 
 -- A monitor that cannot be read must not wipe the last good rule.
@@ -275,5 +289,11 @@ assert(left == 435 and right == 435, "moving it back off recenters the panel")
 -- window.close still counts the window on its way out, and window.destroy
 -- follows it with the settled count, so only destroy is hooked.
 assert(handlers["window.close"] == nil, "window.close counts the window on its way out")
+
+assert(#launches == 1, "opening, refitting and changing windows do not reseed an existing console")
+created({ name = "special:qconsole", is_empty = true })
+assert(#launches == 2, "recreating an empty console seeds it again")
+dofile(os.getenv("OMARCHY_PATH") .. "/default/hypr/qconsole.lua")
+assert(#launches == 2, "reloading config with an existing console does not launch an agent")
 LUA
 pass "the console is a centered panel until a second app joins it"
