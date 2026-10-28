@@ -22,6 +22,7 @@ fontconfig
 foot
 gnome-themes-extra
 gum
+herdr
 hyprland
 hyprland-guiutils
 hyprland-preview-share-picker
@@ -34,8 +35,8 @@ noto-fonts-cjk
 noto-fonts-emoji
 omacalc
 omarchy-keyring
+omarchy-screensaver
 owe
-owe-lockfeed
 perl
 qt6-imageformats
 quickshell
@@ -59,6 +60,7 @@ alsa-utils
 pamixer
 pipewire-alsa
 pipewire-pulse
+rtkit
 wireplumber
 
 # group: files
@@ -86,6 +88,7 @@ networkmanager
 gpu-screen-recorder
 grim
 hyprpicker
+omacut
 omasnap
 qrencode
 slurp
@@ -96,7 +99,7 @@ zbar
 # group: power
 # Brightness keys and the power-profile switching the session initializes.
 brightnessctl
-power-profiles-daemon
+omarchy-power-profiles-daemon
 
 # group: display-manager
 # Optional graphical login. Kept out of "all" because it enables a system

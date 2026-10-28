@@ -641,7 +641,7 @@ reset_run
 printf '[omarchy]\nServer = x\n' >"$pacman_conf"
 seed_registration core,audio,files
 OMARCHY_TEST_INSTALLED_PACKAGES="$core_packages" run_setup packages core audio files >/dev/null
-grep -qx 'pacman -Syu --needed --noconfirm hyprland foot quickshell ttf-jetbrains-mono-nerd-basic omarchy-keyring alsa-utils nautilus' "$sudo_log" ||
+grep -qx 'pacman -Syu --needed --noconfirm alsa-utils nautilus' "$sudo_log" ||
   fail "package reconciliation uses one transaction for the recorded package stages" "$(<"$sudo_log")"
 grep -qx "pacman-key --list-keys 40DFB630FF42BCFFB047046CF0134EE680CAC571" "$sudo_log" ||
   fail "package reconciliation does not verify its pinned signing key" "$(<"$sudo_log")"
@@ -657,6 +657,8 @@ reset_run
 printf '[core]\nInclude = /etc/pacman.d/mirrorlist\n' >"$pacman_conf"
 seed_registration core
 OMARCHY_TEST_INSTALLED_PACKAGES="$core_packages" run_setup packages core >/dev/null
+grep -qx 'pacman -Syu --needed --noconfirm' "$sudo_log" ||
+  fail "satisfied requirements still receive a full upgrade without explicit replacement targets" "$(<"$sudo_log")"
 grep -qx '\[omarchy\]' "$pacman_conf" || fail "package reconciliation does not restore a missing Omarchy repository"
 repo_line=$(grep -n "tee -a $pacman_conf" "$sudo_log" | cut -d: -f1)
 key_line=$(grep -n 'pacman-key --lsign-key' "$sudo_log" | cut -d: -f1)

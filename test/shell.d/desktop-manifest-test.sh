@@ -79,7 +79,7 @@ pass "desktop manifest carries perl in the core group for the clipboard service"
 
 # OWE renders video wallpapers and feeds the lock screen. Overlay updates do
 # not run the product migrations that install it, so the core group must carry it.
-for package in owe owe-lockfeed; do
+for package in owe; do
   awk -v package="$package" '
     /^# group: / { in_group = ($3 == "core"); next }
     { sub(/[[:space:]]*#.*$/, "") }
@@ -88,7 +88,7 @@ for package in owe owe-lockfeed; do
   ' "$ROOT/install/omarchy-desktop.packages" ||
     fail "desktop manifest carries $package in the core group"
 done
-pass "desktop manifest carries the video wallpaper renderer and lock feed in core"
+pass "desktop manifest carries the video wallpaper renderer in core"
 
 # The desktop pulls a few signed packages from pkgs.omarchy.org. A plain Arch
 # host does not have their signer, so core must bootstrap the product keyring.
@@ -114,18 +114,6 @@ for package in gnome-themes-extra yaru-icon-theme; do
     fail "desktop manifest carries $package in the core group"
 done
 pass "desktop manifest carries the GTK and icon themes in core"
-
-# The idle service launches omarchy-screensaver from the core session, and
-# that command executes ttfx directly. A checkout-only desktop must not reach
-# its first idle cycle with the animation runtime missing.
-awk '
-  /^# group: / { in_group = ($3 == "core"); next }
-  { sub(/[[:space:]]*#.*$/, "") }
-  in_group && $0 == "ttfx" { found = 1 }
-  END { exit !found }
-' "$ROOT/install/omarchy-desktop.packages" ||
-  fail "desktop manifest carries ttfx in the core group"
-pass "desktop manifest carries ttfx in core for the screensaver"
 
 # The default screenshot action and clipboard image opener both execute
 # omasnap, so capture is incomplete on a checkout-only install without it.

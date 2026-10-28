@@ -1334,14 +1334,21 @@ fi
 
 # --- Packages for every selected package stage, in one transaction.
 packages=()
+package_stage_selected=0
 if [[ $operation != "artifacts" ]]; then
   for stage in "${package_stages[@]}"; do
     if stage_selected "$stage"; then
+      package_stage_selected=1
       mapfile -t stage_pkgs < <(group_packages "$stage")
       echo "==> $stage"
       echo "    packages: ${stage_pkgs[*]}"
       for package in "${stage_pkgs[@]}"; do
-        if [[ $package == "ttf-jetbrains-mono-nerd-basic" ]] && pacman -Q ttf-jetbrains-mono-nerd >/dev/null 2>&1; then
+        if [[ $operation == "packages" ]] && package_requirement_satisfied "$package"; then
+          # -Syu still upgrades installed repository packages. Naming every
+          # satisfied requirement again would replace user-chosen providers
+          # and fail on reviewed local packages not yet in the host's repo.
+          echo "    preserving satisfied requirement: $package"
+        elif [[ $package == "ttf-jetbrains-mono-nerd-basic" ]] && pacman -Q ttf-jetbrains-mono-nerd >/dev/null 2>&1; then
           echo "    preserving installed package: ttf-jetbrains-mono-nerd (satisfies $package)"
         else
           packages+=("$package")
@@ -1351,7 +1358,7 @@ if [[ $operation != "artifacts" ]]; then
   done
 fi
 
-if (( ${#packages[@]} > 0 )) || { [[ $operation == "setup" ]] && (( ! status_only )); }; then
+if (( package_stage_selected )) || { [[ $operation == "setup" ]] && (( ! status_only )); }; then
   # A full upgrade on a fresh Arch system can outlive sudo's timestamp. Keep
   # the credential alive so later selected stages do not fail halfway through
   # the setup or prompt again after the package transaction.
@@ -1365,7 +1372,7 @@ if [[ $operation == "setup" || $operation == "packages" ]] && stage_selected cor
   ensure_overlay_package_source
 fi
 
-if (( ${#packages[@]} > 0 )); then
+if (( package_stage_selected )); then
   echo "Installing selected package stages (full system upgrade)"
   pacman_args=(-Syu --needed)
   if [[ $operation == "packages" || ${OMARCHY_UPDATE_UNATTENDED:-0} == "1" ]]; then
