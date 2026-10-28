@@ -66,8 +66,9 @@ Panel {
     Commons.I18n.t("network.phrase7")
   ]
   readonly property string connectionPhrase: connectionPhrases[connectionPhraseIndex % connectionPhrases.length]
-  readonly property bool networkManagerAvailable: Networking.backend === NetworkBackendType.NetworkManager
-  readonly property var networkDevices: Networking.devices ? Networking.devices.values : []
+  readonly property var networking: NetworkState.networking
+  readonly property bool networkManagerAvailable: !!networking && networking.backend === NetworkBackendType.NetworkManager
+  readonly property var networkDevices: networking && networking.devices ? networking.devices.values : []
   readonly property var wifiDevice: findDevice(DeviceType.Wifi)
   readonly property var wifiNetworkObjects: wifiDevice && wifiDevice.networks ? wifiDevice.networks.values : []
   readonly property var connectedWifiNetwork: findConnectedWifiNetwork()
@@ -138,7 +139,7 @@ Panel {
   readonly property bool qrHeaderHasCursor: cursorActive && focusSection === "header" && headerIndex === qrHeaderIndex
   readonly property bool speedHeaderHasCursor: cursorActive && focusSection === "header" && headerIndex === speedHeaderIndex
   readonly property bool toggleHeaderHasCursor: cursorActive && focusSection === "header" && headerIndex === toggleHeaderIndex
-  readonly property string toggleHint: Networking.wifiEnabled ? Commons.I18n.t("network.turnWifiOff") : Commons.I18n.t("network.turnWifiOn")
+  readonly property string toggleHint: (root.networking && root.networking.wifiEnabled) ? Commons.I18n.t("network.turnWifiOff") : Commons.I18n.t("network.turnWifiOn")
   readonly property var dnsProviders: ["DHCP", "Cloudflare", "Google", "Custom"]
   property int dnsIndex: 0
   // ["2.4", "5", ...], or empty when there is nothing to choose between.
@@ -206,7 +207,7 @@ Panel {
 
   function toggleNetwork() {
     if (!networkManagerAvailable) return
-    Networking.wifiEnabled = !Networking.wifiEnabled
+    root.networking.wifiEnabled = !root.networking.wifiEnabled
     Qt.callLater(function() { root.refresh(true) })
   }
 
@@ -443,6 +444,7 @@ Panel {
   // when both are up, matching the default-route device.
   readonly property var wiredDevice: findDevice(DeviceType.Wired)
   readonly property string kind: {
+    if (!networkManagerAvailable) return NetworkState.kind
     if (wiredDevice && wiredDevice.connected) return "ethernet"
     if (connectedWifiNetwork) return "wifi"
     // NetworkManager can leave the active profile out of the device's
@@ -454,13 +456,13 @@ Panel {
     if (wifiDevice && wifiDevice.connected) return "wifi"
     return "disconnected"
   }
-  readonly property int signalStrength: kind === "wifi"
+  readonly property int signalStrength: !networkManagerAvailable ? NetworkState.signalStrength : kind === "wifi"
     ? Model.connectedSignalStrength(connectedWifiNetwork ? connectedWifiNetwork.signalStrength : 0, activeApSignal)
     : -1
   // Filled by activeApSignalPoll from nmcli while the connected network has no
   // strength of its own to report.
   property int activeApSignal: -1
-  readonly property bool needsActiveApSignal: kind === "wifi"
+  readonly property bool needsActiveApSignal: networkManagerAvailable && kind === "wifi"
     && !(connectedWifiNetwork && connectedWifiNetwork.signalStrength > 0)
   // Bumped whenever the cached reading stops describing the current link, so
   // an nmcli read still in flight from before cannot write a stale strength.
@@ -501,8 +503,8 @@ Panel {
   // not just redirects). Consume its native notifications rather than running
   // a second curl loop or mistaking an ordinary timeout for a captive portal.
   readonly property bool connectivityChecksEnabled: networkManagerAvailable
-    && Networking.canCheckConnectivity && Networking.connectivityCheckEnabled
-  readonly property string connectivity: Model.connectivityState(kind, Networking.connectivity, {
+    && root.networking.canCheckConnectivity && root.networking.connectivityCheckEnabled
+  readonly property string connectivity: Model.connectivityState(kind, (root.networking ? root.networking.connectivity : NetworkConnectivity.Unknown), {
     Portal: NetworkConnectivity.Portal, Limited: NetworkConnectivity.Limited,
     Full: NetworkConnectivity.Full, None: NetworkConnectivity.None
   }, connectivityChecksEnabled)
@@ -512,7 +514,7 @@ Panel {
   // Keyed on the device rather than the SSID: on an OWE transition-mode
   // network the listed network comes and goes with every scan while the link
   // stays up, and a real network switch already passes through "disconnected".
-  readonly property string connectionKey: kind === "wifi" && wifiDevice
+  readonly property string connectionKey: !networkManagerAvailable ? kind + ":" + NetworkState.connectionName : kind === "wifi" && wifiDevice
     ? kind + ":" + wifiDevice.name
     : (kind === "ethernet" && wiredDevice ? kind + ":" + wiredDevice.name : "")
 
@@ -533,7 +535,7 @@ Panel {
   }
 
   function checkConnectivity() {
-    if (connectivityChecksEnabled && kind !== "disconnected") Networking.checkConnectivity()
+    if (connectivityChecksEnabled && kind !== "disconnected") root.networking.checkConnectivity()
   }
 
   function openCaptivePortal() {
@@ -580,7 +582,7 @@ Panel {
       dnsProc.command = ["bash", "-c", root.dnsCommand("")]
       dnsProc.running = true
     }
-    if (!bandProc.running) {
+    if (networkManagerAvailable && !bandProc.running) {
       bandProc.command = ["omarchy-network-band"]
       bandProc.running = true
     }
@@ -983,7 +985,7 @@ Panel {
     id: bandPoll
     interval: 4000
     repeat: true
-    running: root.opened
+    running: root.opened && root.networkManagerAvailable
     onTriggered: {
       if (bandProc.running) return
       bandProc.command = ["omarchy-network-band"]
@@ -1284,7 +1286,7 @@ Panel {
           ToggleSwitch {
             id: powerSwitch
             visible: root.canToggleWifi
-            checked: Networking.wifiEnabled
+            checked: !!root.networking && root.networking.wifiEnabled
             hasCursor: root.toggleHeaderHasCursor
             foreground: root.bar.foreground
             Layout.alignment: Qt.AlignVCenter
@@ -1318,6 +1320,7 @@ Panel {
             readonly property string title: {
               // The HTTP restriction does not undo association. Show the live
               // SSID even before route/details polling has returned anything.
+              if (!root.networkManagerAvailable && root.kind !== "disconnected") return NetworkState.connectionName || root.info.iface
               if (root.kind === "wifi" && root.connectedWifiNetwork) return root.connectedWifiNetwork.name || "Wi-Fi"
               if (root.info.type === "wifi") return root.info.ssid || "Wi-Fi"
               if (root.info.type === "ethernet") return Commons.I18n.t("network.ethernet")

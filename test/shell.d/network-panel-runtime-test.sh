@@ -23,6 +23,7 @@ stage_panel() {
   cp -r "$fixtures/mocks" "$stage/mocks"
   cp "$fixtures/$1.qml" "$stage/shell.qml"
   cp "$ROOT/shell/plugins/panels/network/Model.js" "$stage/network/Model.js"
+  cp "$ROOT/shell/plugins/panels/network/NetworkState.qml" "$ROOT/shell/plugins/panels/network/qmldir" "$stage/network/"
   node - "$ROOT" "$stage" <<'JS'
 const fs = require('fs')
 const [root, stage] = process.argv.slice(2)
@@ -30,7 +31,9 @@ let source = fs.readFileSync(`${root}/shell/plugins/panels/network/Panel.qml`, '
 // Keep installed enum values and actual UI bindings. Only replace the singleton
 // and expose private IDs in the disposable copy, never in production code.
 source = source.replace('import Quickshell.Networking', 'import Quickshell.Networking\nimport "../mocks"')
-source = source.replace(/\bNetworking\./g, 'NetworkMock.')
+if (!stage.endsWith('/host-managed')) {
+  source = source.replace('NetworkState.networking', 'NetworkMock')
+}
 // The panel's content is built lazily, so its private IDs are exposed from
 // the content root and mirrored on the panel once the test builds it.
 source = source.replace('      id: keyCatcher\n', `      id: keyCatcher
@@ -69,7 +72,7 @@ run_panel() {
     NETWORK_TEST_BROWSER_LOG="$stage/browser.log" NETWORK_TEST_NMCLI_LOG="$stage/nmcli.log" \
     timeout 30 quickshell -p "$stage" --no-color 2>&1) || fail "$1 fixture exits cleanly" "$output"
   [[ $output == *"RESULT pass"* ]] || fail "$1 runtime assertions pass" "$output"
-  if rg -q 'RESULT fail|ReferenceError|TypeError|Error:|Unable to assign|Binding loop' <<<"$output"; then
+  if rg -q 'RESULT fail|ReferenceError|TypeError|Error:|Unable to assign|Binding loop|Could not find an available backend' <<<"$output"; then
     fail "$1 fixture has no QML errors" "$output"
   fi
 }
@@ -99,3 +102,32 @@ while IFS= read -r args; do
   [[ $args == "-t -f IN-USE,SIGNAL device wifi list ifname test-wifi --rescan no" ]] || fail "in-use access point read never rescans" "$args"
 done <"$stage/nmcli.log"
 pass "network keeps Wi-Fi through OWE transition scan churn, reads the in-use access point, and discards stale reads"
+
+stage_panel host-managed
+export NETWORK_TEST_STATE="$stage"
+printf 'ethernet\tuplink0\t\t\n' >"$stage/status"
+mkfifo "$stage/events" "$stage/backend-events"
+cat >"$stage/bin/gdbus" <<'SH'
+#!/bin/bash
+printf 'start\n' >>"$NETWORK_TEST_STATE/backend-starts"
+printf 'The name org.freedesktop.NetworkManager does not have an owner\n'
+while IFS= read -r line; do printf '%s\n' "$line"; done <>"$NETWORK_TEST_STATE/backend-events"
+SH
+cat >"$stage/bin/ip" <<'SH'
+#!/bin/bash
+printf 'start\n' >>"$NETWORK_TEST_STATE/route-starts"
+while IFS= read -r line; do printf '%s\n' "$line"; done <>"$NETWORK_TEST_STATE/events"
+SH
+cat >"$stage/bin/omarchy-network-status" <<'SH'
+#!/bin/bash
+[[ ${1:-} == "--verbose" ]] && exit 0
+printf 'read\n' >>"$NETWORK_TEST_STATE/reads"
+cat "$NETWORK_TEST_STATE/status"
+SH
+chmod +x "$stage/bin/gdbus" "$stage/bin/ip" "$stage/bin/omarchy-network-status"
+run_panel "host-managed network"
+[[ $(wc -l <"$stage/backend-starts") == 1 && $(wc -l <"$stage/route-starts") == 1 ]] ||
+  fail "multiple monitor panels share one backend and route observer"
+read_count=$(wc -l <"$stage/reads")
+(( read_count >= 3 && read_count <= 5 )) || fail "route events refresh status without idle polling" "$read_count reads"
+pass "host-managed network status follows route changes without native-backend warnings, per-monitor watchers, or idle polling"
