@@ -38,8 +38,6 @@ Every subscription on one page, limits first.
 - **Balance** — prepaid agents show a credit ledger instead of limits: a
   fuel-gauge meter that drains toward empty, the remaining credit, and
   funded-versus-spent detail.
-- **Make something cool** — starter prompts (a new theme, plugin, or app) that
-  start the default agent on the task through `omarchy agent prompt`.
 - **Adding a subscription** — the + in the hero's corner swaps the page for
   Claude Code, Codex, and Grok as large marks, three across, with the first
   one focused, and the hero's line reads Add an account. The + becomes the
@@ -293,8 +291,8 @@ It is the exact complement of the provider collectors: a provider id another col
   prepaid balance is down to its last 10%.
 - Panel: the arrows (or `h`/`j`/`k`/`l`) walk a cursor over everything that
   does something, row by row: the hero's buttons, each agent's header, each
-  switchable account (landing on Use, with Autoswitch to its left), and the
-  starter tiles, or the agents to add. Ctrl+Up/Down (or Ctrl+`k`/`j`) moves the
+  switchable account (landing on Use, with Autoswitch to its left), or the
+  agents to add. Ctrl+Up/Down (or Ctrl+`k`/`j`) moves the
   agent the cursor is in up or down the page; dragging an agent by its mark
   does the same, lighting the header it will land on. The order is kept in
   `~/.local/state/omarchy/agents/order.json`. Hovering moves the same cursor. Enter acts on it, or

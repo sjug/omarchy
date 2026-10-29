@@ -54,8 +54,8 @@ Panel {
 
   // The keyboard walks everything on the page that does something, in
   // reading order, one row at a time: the hero's buttons, then each agent's
-  // header, its Sign-in required link or switchable accounts, and the starter
-  // tiles, or the agents to add while picking one. Up and down change rows, left and right move along one.
+  // header and its Sign-in required link or switchable accounts, or the agents
+  // to add while picking one. Up and down change rows, left and right move along one.
   // Hovering moves the same cursor, so only one thing is lit.
   readonly property var keyRows: {
     var rows = []
@@ -90,11 +90,6 @@ Panel {
           }
           if (row.length > 0) rows.push(row)
         }
-      }
-      if (!blankSlate) {
-        var tiles = []
-        for (var j = 0; j < starterPrompts.length; j++) tiles.push({ kind: "starter", index: j })
-        rows.push(tiles)
       }
     }
     return rows
@@ -345,18 +340,6 @@ Panel {
     Util.execArgv(addPrivate ? ["omarchy-launch-browser", "--private", addUrl] : ["omarchy-launch-browser", addUrl])
   }
 
-  // A few ways into making Omarchy your own, handed to the default agent.
-  readonly property var starterPrompts: [
-    { glyph: "󰏘", label: Commons.I18n.t("agents.theme"), prompt: "Make me a new Omarchy theme. Ask me what look or inspiration I have in mind, then build it following the Omarchy skill's theming guide and switch to it." },
-    { glyph: "󰐱", label: Commons.I18n.t("agents.plugin"), prompt: "Make me a new Omarchy shell plugin. Ask me what I'd like it to do, then build it following the Omarchy skill's plugin guide and enable it." },
-    { glyph: "󰣆", label: Commons.I18n.t("agents.app"), prompt: "Make me a new app for my Omarchy desktop. Ask me what it should do, then build it following the omarchy-app skill and install it so it shows up in the app launcher." }
-  ]
-
-  function startPrompt(prompt) {
-    root.close()
-    Util.execArgv(["omarchy-agent-prompt", prompt])
-  }
-
   function renameAccount(p, account, label) {
     if (!p || !account) return
     Util.execArgv(["omarchy-agent-account-rename", p.providerId, String(account.id), label])
@@ -394,7 +377,6 @@ Panel {
     else if (target.kind === "add") addStage !== "" ? cancelAdd() : addAccount()
     else if (target.kind === "choice") chooseAddProvider(addProviders[target.index].providerId)
     else if (target.kind === "launch") launchAgent()
-    else if (target.kind === "starter") startPrompt(starterPrompts[target.index].prompt)
     else if (target.kind === "providerSignin") signInAgain(providers[target.index], null)
     else if (target.kind === "signin") signInAgain(pickedEntry.provider, pickedEntry.account)
     else if (target.kind === "autoswitch") setSwitchMode(pickedEntry.provider, autoSwitchFor(pickedEntry.provider) ? "manual" : "auto")
@@ -1112,45 +1094,6 @@ Panel {
             }
           }
 
-          // ---------- Make something ----------
-          PanelSeparator {
-            visible: root.addStage === "" && !root.blankSlate
-            foreground: root.foreground
-          }
-
-          Column {
-            visible: root.addStage === "" && !root.blankSlate
-            width: parent.width
-            spacing: Style.space(12)
-
-            PanelSectionHeader {
-              text: Commons.I18n.t("agents.makeSomethingCool")
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            Row {
-              id: tileRow
-              width: parent.width
-              spacing: Style.space(10)
-
-              Repeater {
-                model: root.starterPrompts
-
-                StarterTile {
-                  required property var modelData
-                  required property int index
-                  hasCursor: root.hasKey("starter", index)
-                  onHovered: root.pointAt("starter", index)
-                  width: (tileRow.width - tileRow.spacing * 2) / 3
-                  glyph: modelData.glyph
-                  title: modelData.label
-                  onClicked: root.startPrompt(modelData.prompt)
-                }
-              }
-            }
-          }
-
           Text {
             textFormat: Text.PlainText
             visible: text !== ""
@@ -1618,60 +1561,6 @@ Panel {
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: mark.size
-    }
-  }
-
-  // A starter: its glyph and what it makes, on a soft tile that warms to the
-  // accent on hover.
-  component StarterTile: Rectangle {
-    id: tile
-    signal clicked()
-    signal hovered()
-    property string glyph: ""
-    property string title: ""
-    property bool hasCursor: false
-    implicitHeight: tileBody.implicitHeight + Style.space(20)
-    radius: Style.cornerRadius
-    color: hasCursor ? root.alpha(Commons.Color.accent, 0.14) : root.alpha(root.foreground, 0.05)
-    onHasCursorChanged: if (hasCursor) root.revealItem(tile)
-
-    Row {
-      id: tileBody
-      anchors.centerIn: parent
-      spacing: Style.space(8)
-
-      Text {
-        anchors.verticalCenter: parent.verticalCenter
-        textFormat: Text.PlainText
-        text: tile.glyph
-        color: Commons.Color.accent
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.heading
-      }
-
-      Text {
-        anchors.verticalCenter: parent.verticalCenter
-        textFormat: Text.PlainText
-        text: tile.title
-        color: tile.hasCursor ? Commons.Color.accent : root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        font.bold: true
-      }
-    }
-
-    MouseArea {
-      id: tileMouse
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onEntered: tile.hovered()
-      onClicked: tile.clicked()
-    }
-
-    PanelToolTip {
-      visible: tileMouse.containsMouse
-      text: Commons.I18n.t("agents.startOnNew").arg(tile.title.toLowerCase())
     }
   }
 

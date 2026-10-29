@@ -3,7 +3,6 @@
   "agents.addAccount": "Add an account",
   "agents.addProviderAccount": "Add %1 account",
   "agents.addSubscription": "Add a subscription",
-  "agents.app": "App",
   "agents.autoswitch": "Autoswitch",
   "agents.backToLimits": "Back to the limits",
   "agents.balance": "Balance",
@@ -37,7 +36,6 @@
   "agents.lastUpdatedJustNow": "Last updated less than a minute ago",
   "agents.lastUpdatedUnknown": "Last updated time unavailable",
   "agents.limitsPaused": "Limits paused",
-  "agents.makeSomethingCool": "MAKE SOMETHING COOL",
   "agents.merged": {
     "one": "Merged from %1 device",
     "other": "Merged from %1 devices"
@@ -51,7 +49,6 @@
   "agents.pasteCode": "If the page shows a code instead of finishing, paste it here.",
   "agents.placeholderCode": "Code",
   "agents.placeholderWork": "Work",
-  "agents.plugin": "Plugin",
   "agents.promptsToday": {
     "one": "%1 prompt today",
     "other": "%1 prompts today"
@@ -74,14 +71,12 @@
   "agents.signInRequired": "Sign-in required",
   "agents.signInUnfinished": "The sign-in didn't finish.",
   "agents.startDefaultAgent": "Start the default agent",
-  "agents.startOnNew": "Start your default agent on a new %1",
   "agents.starting": "Starting…",
   "agents.stopAutoSwitch": "Stop switching automatically",
   "agents.subscriptions": "Subscriptions",
   "agents.switchAutoAt": "Switch here automatically at %1%",
   "agents.syncMkdirFailed": "Usage sync mkdir failed",
   "agents.syncScanFailed": "Usage sync scan failed",
-  "agents.theme": "Theme",
   "agents.tierPrepaid": "Prepaid",
   "agents.title": "Agents",
   "agents.tokensThisWeek": {
