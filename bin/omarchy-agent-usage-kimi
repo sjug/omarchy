@@ -57,14 +57,11 @@ from collectors import (  # noqa: E402
 
 AGENT_ID = "kimi"
 AGENT_NAME = "Kimi"
+# Kimi's edge rejects urllib's default identity before OAuth is reached.
+USER_AGENT = "omarchy-agent-usage/1"
 AUTH_HELP = "Set KIMI_API_KEY or sign in to Kimi (run `kimi login`)."
-USAGE_URL = os.environ.get("KIMI_USAGE_URL") or (
-  os.environ.get("KIMI_CODE_BASE_URL", "https://api.kimi.com/coding/v1").rstrip("/") + "/usages"
-)
-OAUTH_HOST = (
-  os.environ.get("KIMI_CODE_OAUTH_HOST") or os.environ.get("KIMI_OAUTH_HOST") or "https://auth.kimi.com"
-)
-TOKEN_URL = OAUTH_HOST.rstrip("/") + "/api/oauth/token"
+DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1"
+DEFAULT_OAUTH_HOST = "https://auth.kimi.com"
 OAUTH_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 # Tokens may only leave this machine for hosts under this domain.
 ALLOWED_DOMAINS = ("kimi.com", "kimi.ai")
@@ -72,6 +69,58 @@ REFRESH_SKEW_S = 60
 LOCK_WAIT_SECONDS = 15
 # proper-lockfile's own stale age: a lease left this long unrenewed is dead.
 LOCK_STALE_SECONDS = 10
+
+
+# Kimi Code's home, as resolveKimiHome finds it.
+def code_home() -> Path:
+  if home := os.environ.get("KIMI_CODE_HOME"):
+    return Path(home).expanduser()
+  return Path.home() / ".kimi-code"
+
+
+def native_auth_settings() -> tuple[str, str, str, bool, str]:
+  """Follow Kimi Code's resolveKimiCodeRuntimeAuth credential scoping.
+
+  An endpoint override selects its own slot, never another environment's
+  refresh token. Only the default host pair shares the old kimi-code slot.
+  """
+  provider = {}
+  error = ""
+  try:
+    with (code_home() / "config.toml").open("rb") as handle:
+      config = tomllib.load(handle)
+    provider = obj(obj(config.get("providers")).get("managed:kimi-code"))
+  except FileNotFoundError:
+    pass
+  except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    error = "Cannot read Kimi Code config.toml; repair it or set KIMI_API_KEY"
+
+  oauth = obj(provider.get("oauth"))
+  env_base = os.environ.get("KIMI_CODE_BASE_URL")
+  env_host = os.environ.get("KIMI_CODE_OAUTH_HOST", os.environ.get("KIMI_OAUTH_HOST"))
+  overridden = env_base is not None or env_host is not None
+  base = env_base if env_base is not None else provider.get("base_url", DEFAULT_BASE_URL)
+  host = env_host if overridden else oauth.get("oauth_host")
+  if host is None:
+    host = DEFAULT_OAUTH_HOST
+  if not isinstance(base, str) or not base.strip() or not isinstance(host, str) or not host.strip():
+    base, host = DEFAULT_BASE_URL, DEFAULT_OAUTH_HOST
+    error = "Invalid Kimi Code endpoint configuration"
+  base, host = base.rstrip("/"), host.strip().rstrip("/")
+  name = "kimi-code"
+  if (base, host) != (DEFAULT_BASE_URL, DEFAULT_OAUTH_HOST):
+    encoded = json.dumps({"oauthHost": host, "baseUrl": base}, separators=(",", ":"), ensure_ascii=False)
+    name += "-env-" + hashlib.sha256(encoded.encode()).hexdigest()[:16]
+  # The native resolver discards a configured ref that doesn't match these
+  # endpoints. Deriving the name also keeps untrusted keys out of file paths.
+  if not overridden and oauth.get("key") == "oauth/" + name and oauth.get("storage", "file") != "file":
+    error = "Kimi Code uses keyring credentials; set KIMI_API_KEY to read usage"
+  return name, base, host, bool(provider) or overridden or bool(error), error
+
+
+CREDENTIAL_NAME, BASE_URL, OAUTH_HOST, NATIVE_CONFIGURED, AUTH_CONFIG_ERROR = native_auth_settings()
+USAGE_URL = os.environ.get("KIMI_USAGE_URL") or BASE_URL + "/usages"
+TOKEN_URL = OAUTH_HOST + "/api/oauth/token"
 
 
 # The legacy kimi-cli's share directory: KIMI_SHARE_DIR, else ~/.kimi
@@ -86,7 +135,9 @@ def legacy_home() -> Path:
 def credentials_dir() -> Path:
   if home := os.environ.get("KIMI_CODE_HOME"):
     return Path(home).expanduser() / "credentials"
-  candidates = [Path.home() / ".kimi-code" / "credentials", legacy_home() / "credentials"]
+  candidates = [code_home() / "credentials", legacy_home() / "credentials"]
+  if NATIVE_CONFIGURED:
+    return candidates[0]
   for candidate in candidates:
     if (candidate / "kimi-code.json").is_file():
       return candidate
@@ -94,7 +145,7 @@ def credentials_dir() -> Path:
 
 
 CREDENTIALS_DIR = credentials_dir()
-CREDENTIALS_PATH = CREDENTIALS_DIR / "kimi-code.json"
+CREDENTIALS_PATH = CREDENTIALS_DIR / (CREDENTIAL_NAME + ".json")
 
 
 class KimiError(Exception):
@@ -132,7 +183,7 @@ def base_record(**overrides: Any) -> dict[str, Any]:
 
 
 def read_credentials() -> dict[str, Any]:
-  return read_json(CREDENTIALS_PATH)
+  return {} if AUTH_CONFIG_ERROR else read_json(CREDENTIALS_PATH)
 
 
 # The Kimi CLI's own credential file, rewritten only under its lock: private
@@ -178,7 +229,7 @@ def request_refresh(refresh_token: str) -> dict[str, Any]:
       "refresh_token": refresh_token,
     }
   ).encode()
-  headers = {"Content-Type": "application/x-www-form-urlencoded"}
+  headers = {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT}
   request = urllib.request.Request(url, data=form, headers=headers)
   try:
     decoded = open_json(request, timeout=15)
@@ -221,7 +272,7 @@ def refresh_lock():
     return
 
   # Kimi 2.x uses proper-lockfile's directory lease, renewed before its 5s expiry.
-  lock = CREDENTIALS_DIR.parent / "oauth" / "kimi-code.lock"
+  lock = CREDENTIALS_DIR.parent / "oauth" / (CREDENTIAL_NAME + ".lock")
   lock.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
   while True:
     try:
@@ -318,6 +369,8 @@ def api_key(auth: dict[str, str] | None = None) -> str:
     if auth is not None:
       auth["key"] = key
     return key
+  if AUTH_CONFIG_ERROR:
+    raise KimiError(AUTH_CONFIG_ERROR)
   credentials = read_credentials()
   if auth is not None:
     auth["key"] = str(credentials.get("access_token") or "")
@@ -333,7 +386,7 @@ def api_key(auth: dict[str, str] | None = None) -> str:
 
 def quota(key: str) -> dict[str, Any]:
   url, trusted = trusted_url(USAGE_URL)
-  headers = {"Accept": "application/json"}
+  headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
   if trusted:
     headers["Authorization"] = "Bearer " + key
   request = urllib.request.Request(url, headers=headers)
@@ -469,13 +522,6 @@ def to_limits(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 # -------------------------------------------------------------- local stats
-
-
-# Kimi Code's home, as resolveKimiHome finds it.
-def code_home() -> Path:
-  if home := os.environ.get("KIMI_CODE_HOME"):
-    return Path(home).expanduser()
-  return Path.home() / ".kimi-code"
 
 
 # Kimi as pi, omp and opencode name it: the Kimi Code plan (pi's own
@@ -705,7 +751,7 @@ def failure_record(error: Exception, cache: LimitsCache | None) -> dict[str, Any
   # time until Kimi names the next one.
   fallback, fetched_at = cache.kept() if cache else ([], 0)
   help_text = str(error) if isinstance(error, KimiError) else "Kimi usage scan failed"
-  if isinstance(error, KimiError) and error.missing or not has_credential():
+  if (isinstance(error, KimiError) and error.missing) or (not has_credential() and not AUTH_CONFIG_ERROR):
     status, help_text = "Waiting for auth", AUTH_HELP
   elif isinstance(error, KimiError) and error.refused:
     status = "Sign-in expired"
