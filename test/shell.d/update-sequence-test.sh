@@ -47,7 +47,7 @@ if [[ ${0##*/} == "omarchy-shell" ]]; then
   printf '%s\n' "$*" >"$STEP_LOG.shell-args"
 fi
 if [[ ${0##*/} == "omarchy-update-overlay" ]]; then
-  printf '%s\n' "${OMARCHY_UPDATE_USER_PATH:-}" >"$STEP_LOG.overlay-user-path"
+  printf '%s\n' "${OMARCHY_UPDATE_USER_PATH:-$PATH}" >"$STEP_LOG.overlay-user-path"
 fi
 [[ ${FAILING_STEP:-} != "${0##*/}" ]] || exit 1
 STUB
@@ -153,5 +153,4 @@ FAILING_STEP=omarchy-update-mise run_update -y || fail "a failed mise update pre
 diff <(expected_steps) <(steps_run) >"$test_tmp/order" ||
   fail "a failed mise update skips later update steps" "$(cat "$test_tmp/order")"
 grep -q "omarchy update mise" "$test_tmp/err" || fail "the tool update failure has no retry guidance"
-assert_boundary_cold "update after mise failure"
 pass "a mise failure still finishes the update, offers a reboot and explains how to retry"

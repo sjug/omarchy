@@ -51,6 +51,7 @@ wtype
 xdg-desktop-portal-gtk
 xdg-desktop-portal-hyprland
 xdg-terminal-exec
+xorg-xsetroot
 yaru-icon-theme
 
 # group: audio

@@ -144,8 +144,9 @@ if (( ${#artifact_stages[@]} > 0 )); then
 fi
 
 omarchy-overlay-migrate
-# omarchy update replaces PATH with a fixed system one before dispatching here.
-# Hooks run with the caller's PATH so user-installed tools resolve.
+# Updaters predating ordinary sudo carried the caller's PATH separately across
+# the checkout fast-forward. Honor that handoff for their first update; newer
+# entrypoints and direct calls already preserve PATH.
 PATH="${OMARCHY_UPDATE_USER_PATH:-$PATH}" "$omarchy_path/bin/omarchy-hook" post-update
 
 if [[ $old_head != "$current_head" ]] && git -C "$omarchy_path" merge-base --is-ancestor "$old_head" "$current_head"; then
@@ -153,6 +154,7 @@ if [[ $old_head != "$current_head" ]] && git -C "$omarchy_path" merge-base --is-
   mapfile -t removed_configs < <(git -C "$omarchy_path" diff --name-only --diff-filter=D "$old_head..$current_head" -- config/)
   if (( ${#changed_configs[@]} > 0 )); then
     echo -e "\e[33m\nDesktop defaults changed; review and refresh only the user configs you want:\e[0m"
+    echo "These commands replace your user files. Keep customized files (including monitor layouts) and merge wanted changes manually."
     for config_path in "${changed_configs[@]}"; do
       printf '  omarchy refresh config %q\n' "${config_path#config/}"
     done

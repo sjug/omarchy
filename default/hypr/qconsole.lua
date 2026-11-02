@@ -20,12 +20,11 @@ local CONSOLE = "special:qconsole"
 -- from while misc.initial_workspace_tracking is on, and looknfeel turns it off.
 -- Omarchy ships without a default agent, and omarchy-agent exits without
 -- opening anything when none is set, so until one is picked this just opens an
--- empty console.
-local seed = "[workspace " .. CONSOLE .. " silent] omarchy-agent"
-
+-- empty console. A console created by moving a window onto it is not empty, and
+-- is left alone.
 hl.on("workspace.created", function(ws)
   if ws and ws.name == CONSOLE and ws.is_empty then
-    hl.exec_cmd(seed)
+    hl.exec_cmd("omarchy-agent", { workspace = CONSOLE .. " silent" })
   end
 end)
 

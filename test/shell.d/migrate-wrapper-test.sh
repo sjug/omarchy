@@ -12,6 +12,14 @@ test_home="$test_tmp/home"
 stub_bin="$test_tmp/bin"
 mkdir -p "$test_root/migrations" "$test_home" "$stub_bin"
 
+# The fixtures exercise migration ordering, not the host package transaction.
+# Relocate only its lock path so a real update cannot stall these fake homes.
+sed "s|local lock_file=/var/lib/pacman/db.lck|local lock_file=$test_tmp/db.lck|" \
+  "$ROOT/bin/omarchy-migrate" >"$test_tmp/omarchy-migrate"
+grep -Fqx "  local lock_file=$test_tmp/db.lck" "$test_tmp/omarchy-migrate" ||
+  fail "migration fixture isolates the host package lock"
+chmod +x "$test_tmp/omarchy-migrate"
+
 cat >"$stub_bin/omarchy-notification-dismiss" <<'SH'
 #!/bin/bash
 printf '%s\n' "$1" >>"$TEST_DISMISSALS"
@@ -36,7 +44,7 @@ run_migrate() {
   PATH="$stub_bin:$ROOT/bin:$PATH" \
   TEST_CALLS="$test_tmp/calls" \
   TEST_DISMISSALS="$test_tmp/dismissals" \
-    "$ROOT/bin/omarchy-migrate" "$@"
+    "$test_tmp/omarchy-migrate" "$@"
 }
 
 : >"$test_tmp/calls"

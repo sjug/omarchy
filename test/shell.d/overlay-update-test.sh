@@ -301,8 +301,8 @@ GIT_SSH_VARIANT=plink GIT_SSH_COMMAND='plink -batch' TEST_EXPECT_SSH_COMMAND='pl
 GIT_SSH=/custom/ssh-wrapper TEST_EXPECT_SSH_COMMAND='' run_overlay_update -y >/dev/null
 pass "fetch retains configured OpenSSH options and leaves alternate SSH transports intact"
 
-# omarchy update hands over a fixed system PATH and the caller's own in
-# OMARCHY_UPDATE_USER_PATH; hooks get the caller's, other steps keep the fixed one.
+# Older updaters carry the caller's PATH separately through the first update
+# to this checkout. Preserve that compatibility as well as direct calls.
 OMARCHY_UPDATE_USER_PATH="$test_tmp/user-tools:$stub_bin:$PATH" run_overlay_update -y >/dev/null
 [[ $(<"$hook_path_log") == "$test_tmp/user-tools:"* ]] ||
   fail "overlay post-update hooks lose the caller's PATH" "$(<"$hook_path_log")"

@@ -23,33 +23,12 @@
 -- goes back, under its old number, when that monitor returns. With no room in
 -- the block they stay guests, and the bar lists them after the monitor's own.
 
--- Existing global workspace rules remain authoritative when users opt out.
--- Register no reconciliation handlers and leave persisted assignments alone.
-if _G.omarchy_per_monitor_workspaces == false then
-  local global = {
-    focus = function(id)
-      return hl.dsp.focus({ workspace = tostring(id) })
-    end,
-    move_window = function(id, follow)
-      return hl.dsp.window.move({ workspace = tostring(id), follow = follow ~= false })
-    end,
-    move_to_monitor = function(direction)
-      return hl.dsp.workspace.move({ monitor = direction })
-    end,
-    move_window_to_monitor = function(direction)
-      return hl.dsp.window.move({ monitor = direction })
-    end,
-  }
-  o.workspaces = global
-  return global
-end
-
 local paths = require("default.hypr.paths")
 
 local SLOTS = 10
-local STATE_DIR = paths.state_home .. "/omarchy"
-local STATE_FILE = STATE_DIR .. "/monitor-workspaces"
-local MERGED_FILE = STATE_DIR .. "/monitor-workspaces-merged"
+local STATE_DIR = paths.state_home .. "/omarchy/monitors"
+local STATE_FILE = STATE_DIR .. "/workspaces"
+local MERGED_FILE = STATE_DIR .. "/workspaces-merged"
 
 local M = { slots = SLOTS }
 
@@ -80,6 +59,40 @@ local function load_blocks()
 end
 
 load_blocks()
+
+-- Existing global workspace rules remain authoritative when users opt out.
+-- Register no reconciliation handlers and leave persisted assignments alone.
+if _G.omarchy_per_monitor_workspaces == false then
+  local global = {
+    -- Match omarchy-hyprland-monitor-identity without allocating workspace
+    -- blocks: persisted connector identity, then description, then connector.
+    -- Both readers trust old mappings and share one settings key for identical
+    -- serial-less descriptions; global mode does not assign duplicate suffixes.
+    identities = function()
+      local identities = {}
+      for _, monitor in ipairs(hl.get_monitors()) do
+        local description = monitor.description or ""
+        identities[monitor.name] = current[monitor.name]
+          or (description ~= "" and description or monitor.name)
+      end
+      return identities
+    end,
+    focus = function(id)
+      return hl.dsp.focus({ workspace = tostring(id) })
+    end,
+    move_window = function(id, follow)
+      return hl.dsp.window.move({ workspace = tostring(id), follow = follow ~= false })
+    end,
+    move_to_monitor = function(direction)
+      return hl.dsp.workspace.move({ monitor = direction })
+    end,
+    move_window_to_monitor = function(direction)
+      return hl.dsp.window.move({ monitor = direction })
+    end,
+  }
+  o.workspaces = global
+  return global
+end
 
 -- Workspace id -> where it came from, { id, identity }, for each workspace that
 -- joined another monitor's block while its own monitor was unplugged. Kept in a
@@ -235,6 +248,12 @@ local function identities_of(monitors)
   current = identities
 
   return identities
+end
+
+-- Each connected monitor's identity, keyed by connector, for settings that
+-- belong to the physical monitor rather than the port (see monitor-settings).
+function M.identities()
+  return identities_of(connected())
 end
 
 local function free_block()
@@ -713,8 +732,14 @@ hl.on("monitor.added", function(monitor)
   M.reconcile(monitor and monitor.name)
 end)
 
+-- Hyprland reports the removal from inside the monitor's teardown, where moving
+-- workspaces or focus onto a monitor that was mirroring it crashes Hyprland, so
+-- reconcile once the teardown has returned.
 hl.on("monitor.removed", function(monitor)
-  M.reconcile(nil, monitor and monitor.name)
+  local name = monitor and monitor.name
+  hl.timer(function()
+    M.reconcile(nil, name)
+  end, { type = "oneshot", timeout = 1 })
 end)
 
 o.workspaces = M

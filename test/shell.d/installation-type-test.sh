@@ -147,6 +147,7 @@ expected_guarded_commands=(
   omarchy-channel-set
   omarchy-dev-link
   omarchy-dev-unlink
+  omarchy-keyboard-toprow
   omarchy-migrate
   omarchy-overlay-migrate
   omarchy-overlay-stages
