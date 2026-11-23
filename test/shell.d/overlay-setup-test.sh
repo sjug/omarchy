@@ -1052,7 +1052,7 @@ grep -qx "apply-lock" "$call_log" || fail "lock screen PAM setup runs" "$(<"$cal
 grep -qx "theme-set tokyo-night headless=1" "$call_log" || fail "the default theme is generated headlessly" "$(<"$call_log")"
 grep -qx "theme-set-gnome" "$call_log" || fail "the default theme is synchronized to GTK applications" "$(<"$call_log")"
 grep -qx "sudo-keepalive" "$call_log" || fail "package installation keeps sudo credentials alive" "$(<"$call_log")"
-grep -qx "xdg-mime default org.gnome.Nautilus.desktop inode/directory" "$call_log" ||
+grep -qx "xdg-mime default folio.desktop inode/directory" "$call_log" ||
   fail "the files stage registers the default directory handler" "$(<"$call_log")"
 pass "runtime link, lock PAM, mime registration, and desktop theme generation all run"
 

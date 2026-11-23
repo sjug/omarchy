@@ -148,7 +148,7 @@ known_stages=(core link config audio files connectivity capture power lock sessi
 # Only configuration the desktop these stages install actually reads.
 # Everything else under config/ changes unrelated application behavior
 # (git, tmux, Chromium, ...) and stays opt-in via --all-configs.
-desktop_configs=(autostart btop foot hypr hyprland-preview-share-picker omarchy wireplumber)
+desktop_configs=(autostart btop foot hypr hyprland-preview-share-picker omarchy qtengine wireplumber)
 
 theme="tokyo-night"
 session_entry=1
@@ -1504,8 +1504,8 @@ fi
 # --- files: register the default directory handler once the file manager exists.
 if stage_selected files; then
   if omarchy-cmd-present xdg-mime; then
-    echo "==> files: registering nautilus as the inode/directory handler"
-    xdg-mime default org.gnome.Nautilus.desktop inode/directory
+    echo "==> files: registering Files as the inode/directory handler"
+    xdg-mime default folio.desktop inode/directory
   else
     echo "==> files: xdg-mime not available; skip registering the default directory handler" >&2
   fi

@@ -14,7 +14,7 @@
 
 # group: core
 # Compositor, session manager, portals, the Omarchy shell, the shipped
-# terminal, fonts, and the tools Omarchy's desktop scripts invoke directly
+# terminal, fonts, GTK/Qt theming, user directories, and desktop runtime tools
 # (perl: the clipboard service and menu helpers call it). omarchy-keyring pins
 # the signer for the few desktop packages supplied by the Omarchy repo.
 btop
@@ -31,7 +31,7 @@ imagemagick
 inotify-tools
 jq
 noto-fonts
-noto-fonts-cjk
+noto-fonts-cjk-vf
 noto-fonts-emoji
 omacalc
 omarchy-keyring
@@ -39,9 +39,9 @@ omarchy-screensaver
 owe
 perl
 qt6-imageformats
+qtengine
 quickshell
 socat
-ttf-ia-writer
 ttf-jetbrains-mono-nerd-basic
 ttfx
 uwsm
@@ -51,8 +51,7 @@ wtype
 xdg-desktop-portal-gtk
 xdg-desktop-portal-hyprland
 xdg-terminal-exec
-xorg-xsetroot
-yaru-icon-theme
+xdg-user-dirs
 
 # group: audio
 # wireplumber pulls PipeWire core; the pulse/alsa bridges are what most apps
@@ -65,15 +64,15 @@ rtkit
 wireplumber
 
 # group: files
-# File manager (SUPER+SHIFT+F) with previews, phone/network mounts,
+# Files (SUPER+SHIFT+F), Papers for documents, phone/network mounts,
 # removable-media automount (the default session autostarts udiskie), and
 # Disktree, the launcher's disk-usage map.
 disktree-bin
+folio
 gvfs-mtp
 gvfs-nfs
 gvfs-smb
-nautilus
-sushi
+papers
 udiskie
 
 # group: connectivity
@@ -85,11 +84,12 @@ networkmanager
 
 # group: capture
 # Screenshots, recording, color picking, OCR, and QR tools the capture menu
-# and default bindings invoke.
+# and default bindings invoke. Omaview opens completed recordings.
 gpu-screen-recorder
 grim
 hyprpicker
 omacut
+omaview
 omasnap
 qrencode
 slurp

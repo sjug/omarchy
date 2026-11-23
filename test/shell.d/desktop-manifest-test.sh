@@ -101,10 +101,10 @@ awk '
   fail "desktop manifest carries omarchy-keyring in the core group"
 pass "desktop manifest carries the Omarchy package keyring in core"
 
-# The config stage synchronizes Omarchy's selected mode and icon theme to GTK
-# applications. Keep the assets behind those settings in the core desktop set
-# so a checkout-backed Nautilus has the same appearance as the product.
-for package in gnome-themes-extra yaru-icon-theme; do
+# The desktop config selects Adwaita for GTK and qtengine for Qt apps.
+# GTK supplies the Adwaita icons; the retired Yaru theme is no longer needed.
+# Both theming backends belong to core, before config or optional app stages.
+for package in gnome-themes-extra qtengine; do
   awk -v package="$package" '
     /^# group: / { in_group = ($3 == "core"); next }
     { sub(/[[:space:]]*#.*$/, "") }
@@ -113,7 +113,7 @@ for package in gnome-themes-extra yaru-icon-theme; do
   ' "$ROOT/install/omarchy-desktop.packages" ||
     fail "desktop manifest carries $package in the core group"
 done
-pass "desktop manifest carries the GTK and icon themes in core"
+pass "desktop manifest carries GTK and Qt theming in core"
 
 # The default screenshot action and clipboard image opener both execute
 # omasnap, so capture is incomplete on a checkout-only install without it.
