@@ -78,7 +78,7 @@ run_brightness --monitor DP-1 >/dev/null
 pass "DDC bus mapping is cached"
 
 run_brightness --no-osd --monitor DP-1 25%
-grep -F 'ddcutil --bus 7 --skip-ddc-checks --noverify setvcp 10 20' "$call_log" >/dev/null || \
+grep -F 'ddcutil --bus 7 --noverify setvcp 10 20' "$call_log" >/dev/null || \
   fail "external percentage is converted to the monitor VCP range"
 pass "external percentage is converted to the monitor VCP range"
 
@@ -86,7 +86,7 @@ get_count=$(grep -c ' getvcp 10 ' "$call_log")
 run_brightness --no-osd --monitor DP-1 30%
 (( $(grep -c ' getvcp 10 ' "$call_log") == get_count )) || \
   fail "absolute external brightness reuses the cached VCP range"
-grep -F 'ddcutil --bus 7 --skip-ddc-checks --noverify setvcp 10 24' "$call_log" >/dev/null || \
+grep -F 'ddcutil --bus 7 --noverify setvcp 10 24' "$call_log" >/dev/null || \
   fail "absolute external brightness skips write verification"
 pass "absolute external brightness reuses the cached VCP range"
 
@@ -155,13 +155,13 @@ get_count=$(grep -c ' getvcp 10 ' "$call_log")
 DDC_MAXIMUM=100 run_brightness --no-osd --monitor DP-1 50%
 (( $(grep -c ' getvcp 10 ' "$call_log") == get_count + 1 )) || \
   fail "expired external brightness range is refreshed"
-grep -F 'ddcutil --bus 7 --skip-ddc-checks --noverify setvcp 10 50' "$call_log" >/dev/null || \
+grep -F 'ddcutil --bus 7 --noverify setvcp 10 50' "$call_log" >/dev/null || \
   fail "expired external brightness range uses the refreshed maximum"
 pass "expired external brightness range is refreshed"
 
 rm -f "$runtime_dir/omarchy-brightness-display-ddc/DP-1.bus"
 DDC_CURRENT=4 DDC_MAXIMUM=100 run_brightness --no-osd --monitor DP-1 +5%
-grep -F 'ddcutil --bus 7 --skip-ddc-checks --noverify setvcp 10 5' "$call_log" >/dev/null || \
+grep -F 'ddcutil --bus 7 --noverify setvcp 10 5' "$call_log" >/dev/null || \
   fail "external low brightness writes the one-percent target"
 pass "external low brightness uses a one-percent step"
 
