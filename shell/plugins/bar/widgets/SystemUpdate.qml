@@ -57,7 +57,7 @@ BarWidget {
 
   // Recheck as soon as NetworkManager reports full internet connectivity, so a
   // check that ran before Wi-Fi came up doesn't hide the icon for six hours.
-  readonly property bool online: Networking.connectivity === NetworkConnectivity.Full
+  readonly property bool online: !!NetworkState.networking && NetworkState.networking.connectivity === NetworkConnectivity.Full
   onOnlineChanged: if (online) root.refresh()
 
   Timer {

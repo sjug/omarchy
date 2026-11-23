@@ -4,9 +4,11 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Networking
 
-// One observer for every monitor's panel. Native Networking supports only
-// NetworkManager and logs an error when constructed without its D-Bus owner.
-// Other hosts retain their network manager and expose route status instead.
+// One observer for the whole shell. Native Networking supports only
+// NetworkManager and logs an error when constructed without its D-Bus owner,
+// so anything reading network state goes through `networking`, which is null
+// until NetworkManager owns its bus name. Other hosts keep their own network
+// manager and expose route status instead.
 Singleton {
   id: root
 
