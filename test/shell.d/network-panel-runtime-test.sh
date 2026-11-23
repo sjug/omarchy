@@ -48,6 +48,7 @@ source = source.replace('  id: root', `  id: root
   readonly property Item testMeta: panel.loadedContent ? panel.loadedContent.heroMeta : null
   readonly property Item testTitle: panel.loadedContent ? panel.loadedContent.testTitle : null
   property alias testPoll: connectivityPoll
+  property alias testLimitedSettle: limitedSettle
   property alias testApPoll: activeApSignalPoll
   property alias testBarButton: button`)
 fs.writeFileSync(`${stage}/network/Panel.qml`, source)
@@ -131,3 +132,7 @@ run_panel "host-managed network"
 read_count=$(wc -l <"$stage/reads")
 (( read_count >= 3 && read_count <= 5 )) || fail "route events refresh status without idle polling" "$read_count reads"
 pass "host-managed network status follows route changes without native-backend warnings, per-monitor watchers, or idle polling"
+
+stage_panel live-rows
+run_panel "network live rows"
+pass "network rows follow connects, drops, saves and forgets made outside the panel, with the cursor on its network"

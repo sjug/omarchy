@@ -110,13 +110,7 @@ sudo env OMARCHY_ALLOW_DIRECT_PACMAN=1 pacman -Syu
 The guard does not start `omarchy update` itself because pacman is already in a
 transaction setup path; it only aborts with instructions.
 
-The `omarchy` package also installs ALPM hooks for `omarchy-settings` /
-`omarchy-settings-dev` installs and upgrades. The pre-transaction hook runs
-`omarchy-hyprland-reload-guard pause` to disable live Hyprland config reloads
-while `/usr/share/omarchy/default/hypr/**` is replaced. The post-transaction
-hook runs `omarchy-hyprland-reload-guard resume`, forces one `hyprctl reload`,
-and restores the session's previous `misc.disable_autoreload` and
-`debug.suppress_errors` values.
+The `omarchy` package also installs ALPM hooks for `omarchy-settings` / `omarchy-settings-dev` installs and upgrades. The pre-transaction hook runs `omarchy-hyprland-reload-guard pause` to disable live Hyprland config reloads while `/usr/share/omarchy/default/hypr/**` is replaced. The post-transaction hook runs `omarchy-hyprland-reload-guard resume`, forces one `hyprctl reload`, and restores the session's previous `misc.disable_autoreload` and `debug.suppress_errors` values. A session whose Hyprland binary the same transaction replaced is left paused with errors hidden instead: it predates the new config, and both settings go away when it restarts on the new binary.
 
 ## Path 1: `omarchy update`
 
@@ -154,6 +148,7 @@ omarchy-update (product)
   │  install/config/snapper.sh, and the update continues without one)
   ├─ omarchy-update-stay-awake start
   ├─ run system-package updates
+  ├─ restart the shell when migrations are pending, so they reach current code
   ├─ run migrations
   ├─ automatically remove orphan packages and run log analysis
   ├─ clear the shell update indicator: the update just installed what it showed
@@ -333,6 +328,7 @@ omarchy-update-available
 - desktop overlays: new upstream commits for the registered checkout only
 - product dev links: new upstream commits for the active checkout plus the installed product package
 - package-backed products: `omarchy-dev`, when installed, otherwise `omarchy`
+- products, before this user's first `omarchy update`: any repository package, until that first update has upgraded the system (the `first-update` done marker). A machine installed from older media needs that first update even when Omarchy's own package is current, so this is how first boot prompts for it instead of a toast.
 
 The checkout check fetches the configured upstream before comparing it with `HEAD`. Desktop overlays also require the same clean, attached, non-divergent state as the updater. A failed fetch is quiet and falls back to the existing remote-tracking state.
 
@@ -359,7 +355,7 @@ step, after the package config is re-synced and before the refresh transaction. 
 
 Desktop overlays do not have a package channel; they follow the maintained upstream branch configured on their checkout, channel changes are refused before any system mutation, and the product channel submenu is hidden for them. The submenu remains available on a successfully classified product even when a custom mirror makes its current channel `unknown`, so it can be used to return to a supported channel; detector failures still hide it.
 
-Every platform has its own pacman.conf and mirrorlist for each channel it offers (x86_64 and aarch64 stable, rc and edge; Apple Silicon rc and edge, below), and a channel change or install finalization copies them into place whole, the same way on every platform (`install/helpers/pacman.sh`); a channel change backs up the old pair first. x86_64's are `default/pacman/pacman-<channel>.conf` and `mirrorlist-<channel>`; Snapdragon and other aarch64 machines use `default/pacman/aarch64/`, the same files with Arch Linux ARM's repositories and Omarchy's mirror of them for that channel (`arm-mirror.omarchy.org`, `arm-rc-mirror.omarchy.org`, `arm-stable-mirror.omarchy.org`), Omarchy's repository ahead of Arch Linux ARM's, as x86_64 puts it ahead of Arch's (migration 1791403252 reorders existing machines the same way, and a refresh can then move a package Omarchy also publishes to Omarchy's build, downgrading it if that build is older); Apple Silicon uses `default/pacman/aarch64-apple/`, which puts Omarchy and Asahi ALARM ahead of Arch Linux ARM. Apple Silicon has edge and rc templates (its rc uses `pkgs.omarchy.org/rc` and `arm-rc-mirror.omarchy.org`; Asahi ALARM has one repository for every channel); its packages reach rc by promotion from edge, and adding its stable template with the first Mac stable release is what opens stable there. A channel change refuses a channel without both files for the platform before anything changes. On aarch64, `omarchy-channel-set` refuses to link a dev checkout without `bin/omarchy-hw-platform` and `install/helpers/pacman.sh`, whose own refresh would write the x86_64 templates. `omarchy-reinstall-pkgs` resets to the platform's default channel (`omarchy_pacman_default_channel`: stable, or edge on Apple Silicon) and installs its default packages; install finalization does the same when the install's channel has no templates for the platform.
+Every platform has its own pacman.conf and mirrorlist for each channel it offers (x86_64 and aarch64 stable, rc and edge; Apple Silicon too, below), and a channel change or install finalization copies them into place whole, the same way on every platform (`install/helpers/pacman.sh`); a channel change backs up the old pair first. x86_64's are `default/pacman/pacman-<channel>.conf` and `mirrorlist-<channel>`; Snapdragon and other aarch64 machines use `default/pacman/aarch64/`, the same files with Arch Linux ARM's repositories and Omarchy's mirror of them for that channel (`arm-mirror.omarchy.org`, `arm-rc-mirror.omarchy.org`, `arm-stable-mirror.omarchy.org`), Omarchy's repository ahead of Arch Linux ARM's, as x86_64 puts it ahead of Arch's (migration 1791403252 reorders existing machines the same way, and a refresh can then move a package Omarchy also publishes to Omarchy's build, downgrading it if that build is older); Apple Silicon uses `default/pacman/aarch64-apple/`, which puts Omarchy and Asahi ALARM ahead of Arch Linux ARM. Apple Silicon has stable, rc and edge templates (its rc and stable use `pkgs.omarchy.org/<channel>` and `arm-<channel>-mirror.omarchy.org`; Asahi ALARM has one repository for every channel); its packages reach rc by promotion from edge, and stable by promotion from rc. A channel change refuses a channel without both files for the platform before anything changes. On aarch64, `omarchy-channel-set` refuses to link a dev checkout without `bin/omarchy-hw-platform` and `install/helpers/pacman.sh`, whose own refresh would write the x86_64 templates. `omarchy-reinstall-pkgs` resets to the platform's default channel (`omarchy_pacman_default_channel`: stable, or edge on Apple Silicon) and installs its default packages; install finalization does the same when the install's channel has no templates for the platform.
 
 There is no version file at runtime. `omarchy-version` derives a product version from `pacman -Q`, reports `dev (<hash>)` for a product dev link or an unregistered checkout during its adoption window, and reports `desktop overlay (<hash>)` for an overlay. `omarchy-version-channel` reports `desktop-overlay` for an overlay, `dev` for an unregistered checkout, and otherwise derives the product package channel from the mirrorlist and `pacman.conf`. These read-only labels validate the installation classification but do not require the current user to own the overlay ledger; ownership remains mandatory for setup, migration, and updates.
 

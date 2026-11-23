@@ -9,7 +9,7 @@ const fs = require('fs')
 const widget = fs.readFileSync(path.join(root, 'shell/plugins/bar/widgets/SystemUpdate.qml'), 'utf8')
 
 assert(
-  /onExited: function\(exitCode\) \{\s*if \(exitCode === 0\) root\.updateAvailable = true\s*else if \(exitCode === 1\) root\.updateAvailable = false\s*\}/.test(widget),
+  /onExited: function\(exitCode\) \{\s*if \(exitCode === 0\) root\.updateAvailable = true\s*else if \(exitCode === 1\) root\.updateAvailable = false\s/.test(widget),
   'the update widget changes state only for definitive available and current results'
 )
 

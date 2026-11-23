@@ -35,7 +35,8 @@ after reboot. This intentionally does not rewrite the running Hyprland,
 systemd, shell, or app-launcher environment; reboot to make every layer agree.
 
 Removes /etc/sudoers.d/omarchy-dev-path, the drop-in that pointed sudo
-at the checkout, so sudo goes back to the packaged omarchy-* immediately.
+at the checkout, so sudo goes back to the packaged omarchy-* immediately,
+and links every agent harness's Omarchy skills back to the package's.
 
 Use --no-reboot when another command will handle the reboot prompt.
 USAGE
@@ -106,6 +107,13 @@ fi
 # shellcheck source=../install/helpers/runtime-link.sh
 source "$runtime_helper"
 omarchy_write_runtime_link "$default_target" 0
+
+# The command beside this one links the agent skills back to the package:
+# the package's may predate it, and this session's OMARCHY_PATH may name a
+# tree older still.
+"$script_dir/omarchy-agent-skills-link" "$default_target"
+"$script_dir/omarchy-agent-pi-defaults" "$default_target"
+echo "Agent skills now link to $default_target/default/agents/skills"
 echo
 
 if (( prompt_reboot )) && gum confirm "Reboot now to activate?"; then

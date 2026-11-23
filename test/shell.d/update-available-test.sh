@@ -118,12 +118,17 @@ esac
 SH
 chmod +x "$stub_bin/git"
 
+# Most cases describe a system that has been through omarchy update once.
+mkdir -p "$test_tmp/home/.local/state/omarchy/done"
+touch "$test_tmp/home/.local/state/omarchy/done/first-update"
+
 run_checker() {
   OMARCHY_PATH="${TEST_OMARCHY_PATH:-/usr/share/omarchy}" \
+    HOME="${TEST_HOME:-$test_tmp/home}" \
     TEST_GIT_LOG="$git_log" \
     TEST_CHECKUPDATES_LOG="$checkupdates_log" \
     TEST_GIT_STATE="${TEST_GIT_STATE:-clean}" \
-    PATH="$stub_bin:$PATH" \
+    PATH="$stub_bin:$ROOT/bin:$PATH" \
     "$ROOT/bin/omarchy-update-available"
 }
 
@@ -323,3 +328,15 @@ for unsafe_state in dirty detached; do
   (( status == 2 )) || fail "overlay indicator treats $unsafe_state checkout as updatable" "status: $status"
 done
 pass "overlay indicator fails distinctly for every checkout state the updater refuses"
+
+if capture_checker "$stdout" "$stderr" \
+  TEST_CHECKUPDATES=updates \
+  TEST_INSTALLED_PACKAGE=omarchy \
+  TEST_HOME="$test_tmp/fresh-home"; then
+  status=0
+else
+  status=$?
+fi
+[[ $status -eq 0 ]] || fail "update checker reports package updates before the first omarchy update"
+grep -q '^linux ' "$stdout" || fail "update checker counts any package before the first omarchy update" "$(cat "$stdout")"
+pass "update checker counts any package update before the first omarchy update"

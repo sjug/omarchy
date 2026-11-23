@@ -57,6 +57,22 @@ printf 'reboot\n' >>"$OMARCHY_DEV_UNLINK_TEST_LOG"
 SH
 chmod +x "$stub_bin/omarchy-system"
 
+# Unlink relinks agent skills and Pi's defaults through the commands beside it,
+# which would otherwise read the host's package and write the test home.
+stub_unlink_siblings() {
+  local sibling
+  for sibling in omarchy-agent-skills-link omarchy-agent-pi-defaults; do
+    printf '#!/bin/bash\nexit 0\n' >"$1/$sibling"
+    chmod +x "$1/$sibling"
+  done
+}
+
+checkout_bin="$test_tmp/checkout-bin"
+mkdir -p "$checkout_bin"
+cp "$ROOT/bin/omarchy-dev-unlink" "$checkout_bin/"
+ln -s "$ROOT/bin/omarchy-installation-type" "$checkout_bin/omarchy-installation-type"
+stub_unlink_siblings "$checkout_bin"
+
 run_unlink() {
   HOME="$test_tmp/home" \
     OMARCHY_PATH="${OMARCHY_TEST_RUNTIME_PATH:-$ROOT}" \
@@ -65,7 +81,7 @@ run_unlink() {
     OMARCHY_DEV_UNLINK_TEST_LOG="$log_file" \
     OMARCHY_DEV_UNLINK_TEST_CONF="$conf_file" \
     PATH="$stub_bin:$PATH" \
-    "${OMARCHY_DEV_UNLINK_COMMAND:-$ROOT/bin/omarchy-dev-unlink}" "$@"
+    "${OMARCHY_DEV_UNLINK_COMMAND:-$checkout_bin/omarchy-dev-unlink}" "$@"
 }
 
 # Product packages split /usr/bin entry points from the source tree under
@@ -83,6 +99,7 @@ cat >"$packaged_bin/omarchy-installation-type" <<'SH'
 echo product
 SH
 chmod +x "$packaged_bin/omarchy-installation-type"
+stub_unlink_siblings "$packaged_bin"
 
 : >"$log_file"
 OMARCHY_DEV_UNLINK_COMMAND="$packaged_bin/omarchy-dev-unlink" \
