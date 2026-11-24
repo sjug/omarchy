@@ -65,6 +65,9 @@ AUTH_HELP = "Run `agy` to sign in, or sign in to Antigravity in omp, pi, or open
 # How each source of a sign-in is named when it needs attention.
 SOURCE_NAMES = {"agy": "`agy`", "omp": "omp", "pi": "pi", "opencode": "opencode"}
 DEFAULT_CLOUD_CODE_URL = "https://daily-cloudcode-pa.googleapis.com"
+# Google omits Gemini quota for an unversioned client. Use a compatible
+# release without running agy, since Omarchy's lazy launcher can install it.
+QUOTA_USER_AGENT = "antigravity/cli/1.5.14"
 
 
 def app_root():
@@ -380,7 +383,7 @@ def post(endpoint, token, body=None):
     base = DEFAULT_CLOUD_CODE_URL
   request = urllib.request.Request(
     f"{base}/v1internal:{endpoint}", data=json.dumps(body or {}).encode(),
-    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": "antigravity"},
+    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": QUOTA_USER_AGENT},
   )
   return open_json(request, timeout=8)
 
