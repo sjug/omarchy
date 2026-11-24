@@ -72,7 +72,7 @@ claude) provider="claude"; name="Claude"; app="Claude Code"; site="claude.ai"; p
 codex) provider="codex"; name="Codex"; app="Codex"; site="chatgpt.com"; package="codex"; home_env="CODEX_HOME"; accounts=true ;;
 grok) provider="grok"; name="Grok"; app="Grok Build"; site="x.ai"; package="grok"; home_env="GROK_HOME"; accounts=true ;;
 # A Gemini subscription is signed in to through Antigravity, its harness.
-agy | gemini) provider="agy"; name="Gemini"; app="Antigravity"; package="antigravity-cli"; login_command=(agy acp --login) ;;
+agy | gemini) provider="agy"; name="Antigravity"; app="Antigravity"; package="antigravity-cli"; login_command=(agy acp --login) ;;
 muse) provider="muse"; name="Muse"; app="Muse Code"; package="muse"; login_command=(muse login) ;;
 # One OpenCode Console sign-in covers Zen and Go.
 opencode) provider="opencode"; name="OpenCode"; app="OpenCode"; package="opencode"; login_command=(opencode auth login opencode --method device) ;;

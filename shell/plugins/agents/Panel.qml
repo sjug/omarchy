@@ -421,7 +421,7 @@ Panel {
     { providerId: "claude", providerName: "Claude", group: "subscription" },
     { providerId: "codex", providerName: "Codex", group: "subscription" },
     { providerId: "grok", providerName: "Grok", group: "subscription" },
-    { providerId: "agy", providerName: "Gemini", group: "subscription" },
+    { providerId: "agy", providerName: "Antigravity", group: "subscription" },
     { providerId: "muse", providerName: "Muse", group: "subscription", printsPage: true },
     { providerId: "cursor", providerName: "Cursor", group: "subscription" },
     { providerId: "copilot", providerName: "Copilot", group: "subscription", limitsElsewhere: true },

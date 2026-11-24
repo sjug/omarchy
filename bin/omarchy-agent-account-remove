@@ -62,7 +62,7 @@ opencode_logout() {
 
 case $provider in
 claude | codex | grok) name=$2 ;;
-agy) name="Gemini" ;;
+agy) name="Antigravity" ;;
 deepseek) name="DeepSeek" ;;
 minimax) name="MiniMax" ;;
 opencode) name="OpenCode" ;;
@@ -104,13 +104,13 @@ agy)
   gemini_in_keyring
   keyring=$?
   if (( keyring == 2 )); then
-    echo "Couldn't check the keyring for Gemini's sign-in." >&2
+    echo "Couldn't check the keyring for Antigravity's sign-in." >&2
     exit 1
   elif (( keyring == 0 )); then
     secret-tool clear service gemini username antigravity 2>/dev/null
     gemini_in_keyring
     if (( $? != 1 )); then
-      echo "Couldn't clear Gemini's sign-in from the keyring." >&2
+      echo "Couldn't clear Antigravity's sign-in from the keyring." >&2
       exit 1
     fi
   fi
